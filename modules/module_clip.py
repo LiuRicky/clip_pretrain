@@ -254,13 +254,60 @@ class ResidualAttentionBlock(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return (x, video_frame)
 
+class TokenShiftResidualAttentionBlock(nn.Module):
+    def __init__(self, d_model: int, n_head: int, attn_mask=None):
+        super().__init__()
+
+        self.attn = nn.MultiheadAttention(d_model, n_head)
+        self.ln_1 = LayerNorm(d_model)
+        self.mlp = nn.Sequential(OrderedDict([
+            ("c_fc", nn.Linear(d_model, d_model * 4)),
+            ("gelu", QuickGELU()),
+            ("c_proj", nn.Linear(d_model * 4, d_model))
+        ]))
+        self.ln_2 = LayerNorm(d_model)
+        self.attn_mask = attn_mask
+
+    def attention(self, x: torch.Tensor, video_frame: int):
+        attn_mask_ = self.attn_mask
+        if self.attn_mask is not None and hasattr(self.attn_mask, '__call__'):
+            attn_mask_ = self.attn_mask(x.size(0))   # LND
+
+        attn_mask_ = attn_mask_.to(dtype=x.dtype, device=x.device) if attn_mask_ is not None else None
+        
+        #  make token shift operation
+        n_div = 32
+        L, N, D = x.shape 
+        fold = L // n_div
+        x = x.view(L, -1, video_frame, D)  # (L,B,T,D)
+        out = torch.zeros_like(x)
+        out[:,:,:,:] = x[:,:,:,:]
+
+        ##############left and right shift##############
+        lshift_indices = torch.arange(start=1, end=L, step=fold)
+        out[lshift_indices, :, 1:, :] = x[lshift_indices, :, :-1, :] # f_t = f_t-1
+        rshift_indices = torch.arange(start=1+3, end=L, step=fold)
+        out[rshift_indices, :, :-1, :] = x[rshift_indices, :, 1:, :] # f_t = f_t+1
+        ##############left and right shift##############
+
+        out = out.view(L, N, D)
+
+        return self.attn(out, out, out, need_weights=False, attn_mask=attn_mask_)[0]
+
+    def forward(self, x_tuple:tuple):
+        x, video_frame = x_tuple
+        x = x + self.attention(self.ln_1(x), video_frame)
+        x = x + self.mlp(self.ln_2(x))
+        return (x, video_frame)
 
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int, attn_mask = None):
+    def __init__(self, width: int, layers: int, heads: int, attn_mask = None, unchanged_layers=12):
         super().__init__()
         self.width = width
         self.layers = layers
-        self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
+        self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) if i < unchanged_layers
+                                         else TokenShiftResidualAttentionBlock(width, heads, attn_mask)
+                                         for i in range(layers)])
 
     def forward(self, x: torch.Tensor, video_frame=-1):
         return self.resblocks((x, video_frame))[0]
@@ -280,7 +327,7 @@ class VisualTransformer(nn.Module):
         self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
         self.ln_pre = LayerNorm(width)
 
-        self.transformer = Transformer(width, layers, heads)
+        self.transformer = Transformer(width, layers, heads, unchanged_layers=10)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))

@@ -7,7 +7,7 @@ main_task_retrieval.py --do_train --num_thread_reader=12 \
 --val_csv ${DATA_PATH}/msrvtt_data/MSRVTT_JSFUSION_test.csv \
 --data_path ${DATA_PATH}/msrvtt_data/MSRVTT_data.json \
 --features_path ${DATA_PATH}/compress_videos \
---output_dir ckpts/ckpt_msrvtt_retrieval_seqTransf \
+--output_dir ckpts/ckpt_msrvtt_retrieval_seqTransf_frame_tokenshift_32_10 \
 --lr 1e-4 --max_words 32 --max_frames 12 --batch_size_val 128 \
 --datatype msrvtt --expand_msrvtt_sentences  \
 --feature_framerate 1 --coef_lr 1e-3 \

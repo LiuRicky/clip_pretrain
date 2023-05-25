@@ -55,56 +55,6 @@ class CLIP4ClipPreTrainedModel(PreTrainedModel, nn.Module):
         model = cls(cross_config, clip_state_dict, *inputs, **kwargs)
 
         ## ===> Initialization trick [HARD CODE]
-        if model.linear_patch == "3d":
-            contain_conv2 = False
-            for key in state_dict.keys():
-                if key.find("visual.conv2.weight") > -1:
-                    contain_conv2 = True
-                    break
-            if contain_conv2 is False and hasattr(model.clip.visual, "conv2"):
-                cp_weight = state_dict["clip.visual.conv1.weight"].clone()
-                kernel_size = model.clip.visual.conv2.weight.size(2)
-                conv2_size = model.clip.visual.conv2.weight.size()
-                conv2_size = list(conv2_size)
-
-                left_conv2_size = conv2_size.copy()
-                right_conv2_size = conv2_size.copy()
-                left_conv2_size[2] = (kernel_size - 1) // 2
-                right_conv2_size[2] = kernel_size - 1 - left_conv2_size[2]
-
-                left_zeros, right_zeros = None, None
-                if left_conv2_size[2] > 0:
-                    left_zeros = torch.zeros(*tuple(left_conv2_size), dtype=cp_weight.dtype, device=cp_weight.device)
-                if right_conv2_size[2] > 0:
-                    right_zeros = torch.zeros(*tuple(right_conv2_size), dtype=cp_weight.dtype, device=cp_weight.device)
-
-                cat_list = []
-                if left_zeros != None: cat_list.append(left_zeros)
-                cat_list.append(cp_weight.unsqueeze(2))
-                if right_zeros != None: cat_list.append(right_zeros)
-                cp_weight = torch.cat(cat_list, dim=2)
-
-                state_dict["clip.visual.conv2.weight"] = cp_weight
-
-        if model.sim_header == 'tightTransf':
-            contain_cross = False
-            for key in state_dict.keys():
-                if key.find("cross.transformer") > -1:
-                    contain_cross = True
-                    break
-            if contain_cross is False:
-                for key, val in clip_state_dict.items():
-                    if key == "positional_embedding":
-                        state_dict["cross.embeddings.position_embeddings.weight"] = val.clone()
-                        continue
-                    if key.find("transformer.resblocks") == 0:
-                        num_layer = int(key.split(".")[2])
-
-                        # cut from beginning
-                        if num_layer < task_config.cross_num_hidden_layers:
-                            state_dict["cross." + key] = val.clone()
-                            continue
-
         if model.sim_header == "seqLSTM" or model.sim_header == "seqTransf":
             contain_frame_position = False
             for key in state_dict.keys():
@@ -232,27 +182,15 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         if hasattr(task_config, "sim_header"):
             self.sim_header = task_config.sim_header
             show_log(task_config, "\t sim_header: {}".format(self.sim_header))
-        if self.sim_header == "tightTransf": assert self.loose_type is False
 
         cross_config.max_position_embeddings = context_length
-        if self.loose_type is False:
-            # Cross Encoder ===>
-            cross_config = update_attr("cross_config", cross_config, "num_hidden_layers", self.task_config,
-                                       "cross_num_hidden_layers")
-            self.cross = CrossModel(cross_config)
-            # <=== End of Cross Encoder
-            self.similarity_dense = nn.Linear(cross_config.hidden_size, 1)
 
-        if self.sim_header == "seqLSTM" or self.sim_header == "seqTransf":
+        if self.sim_header == "seqTransf":
             self.frame_position_embeddings = nn.Embedding(cross_config.max_position_embeddings,
                                                           cross_config.hidden_size)
-        if self.sim_header == "seqTransf":
             self.transformerClip = TransformerClip(width=transformer_width,
                                                    layers=self.task_config.cross_num_hidden_layers,
                                                    heads=transformer_heads, )
-        if self.sim_header == "seqLSTM":
-            self.lstm_visual = nn.LSTM(input_size=cross_config.hidden_size, hidden_size=cross_config.hidden_size,
-                                       batch_first=True, bidirectional=False, num_layers=1)
 
         self.loss_fct = CrossEn()
 
