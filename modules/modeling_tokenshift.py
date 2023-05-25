@@ -238,30 +238,25 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         return sequence_hidden
 
     def encode_temporal(self, visual_output, video_mask):
+        # visual_output shape is (B, T, D)
         if self.sim_header == "meanP":
             # Default: Parameter-free type
             pass
         elif self.sim_header == "seqTransf":
-            # visual_output shape is (B, T, L, D)
-            # visual_mask shape is (B, T)
             # Sequential type: Transformer Encoder
-            B, T, L, D = visual_output.shape
             visual_output_original = visual_output
-            position_ids = torch.arange(T, dtype=torch.long, device=visual_output.device)
-            position_ids = position_ids.unsqueeze(0).expand(B, -1)
+            seq_length = visual_output.size(1)
+            position_ids = torch.arange(seq_length, dtype=torch.long, device=visual_output.device)
+            position_ids = position_ids.unsqueeze(0).expand(visual_output.size(0), -1)
             frame_position_embeddings = self.frame_position_embeddings(position_ids)  # shape=(B,T,D)
-            visual_output = visual_output + frame_position_embeddings.unsqueeze(2)  # shape=(B,T,L,D)
+            visual_output = visual_output + frame_position_embeddings
 
-            video_mask = video_mask.unsqueeze(2).expand(-1, -1, L).reshape(B, -1)  # shape=(B,T*L,D)
             extended_video_mask = (1.0 - video_mask.unsqueeze(1)) * -1000000.0
             extended_video_mask = extended_video_mask.expand(-1, video_mask.size(1), -1)
-            visual_output = visual_output.view(B, -1, D)
             visual_output = visual_output.permute(1, 0, 2)  # NLD -> LND
             visual_output = self.transformerClip(visual_output, extended_video_mask)
             visual_output = visual_output.permute(1, 0, 2)  # LND -> NLD
-            visual_output = visual_output.view(B, T, L, D) + visual_output_original
-
-            visual_output = visual_output[:, :, 0, :]
+            visual_output = visual_output + visual_output_original
 
         return visual_output
 
@@ -274,15 +269,10 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             video_frame = bs * ts
 
         bs_pair = video_mask.size(0)
-        visual_hidden = self.clip.encode_image(video, video_frame=video_frame).float()  # shape=(B*T,L,D)
-        visual_hidden = visual_hidden.view(bs_pair, -1, visual_hidden.size(-2), visual_hidden.size(-1))  # shape=(B,T,L,D)
+        visual_hidden = self.clip.encode_image(video, video_frame=video_frame).float()  # shape=(B*T,D)
+        visual_hidden = visual_hidden.view(bs_pair, -1, visual_hidden.size(-1))  # shape=(B, T, D)
 
-        # select some spatial tokens
-        fold = visual_hidden.size(2) // 5
-        select_idx = torch.arange(start=0, end=visual_hidden.size(2), step=fold)
-        visual_hidden = visual_hidden[:, :, select_idx, :]
-
-        visual_hidden = self.encode_temporal(visual_hidden, video_mask)  # shape=(B,T,D)
+        visual_hidden = self.encode_temporal(visual_hidden, video_mask)  # shape=(B, T, D)
 
         return visual_hidden
 
@@ -363,7 +353,6 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
             video_mask = video_mask.view(-1, video_mask.shape[-1])
 
-        sequence_output, visual_output = sequence_output.contiguous(), visual_output.contiguous()
         if self.training:
             visual_output = allgather(visual_output, self.task_config)
             video_mask = allgather(video_mask, self.task_config)

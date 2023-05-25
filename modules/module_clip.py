@@ -498,7 +498,8 @@ class CLIP(nn.Module):
         hidden = self.visual(image.type(self.dtype), video_frame=video_frame)
         hidden = self.visual.ln_post(hidden) @ self.visual.proj
 
-        x = hidden[:, 0, :]
+        # x = hidden[:, 0, :]
+        x = hidden
 
         if return_hidden:
             return x, hidden
