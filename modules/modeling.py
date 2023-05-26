@@ -8,10 +8,9 @@ import torch
 from torch import nn
 
 from modules.until_module import PreTrainedModel, AllGather, CrossEn
-from modules.module_cross import CrossModel, CrossConfig, Transformer as TransformerClip
+from modules.module_cross import CrossConfig, SpatialAggregationTransformer, TemporalTransformer
 
 from modules.module_clip import CLIP, convert_weights
-from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
 logger = logging.getLogger(__name__)
 allgather = AllGather.apply
@@ -64,13 +63,19 @@ class CLIP4ClipPreTrainedModel(PreTrainedModel, nn.Module):
             if contain_frame_position is False:
                 for key, val in clip_state_dict.items():
                     if key == "positional_embedding":
-                        state_dict["frame_position_embeddings.weight"] = val.clone()
+                        state_dict["temporal_transformer.frame_position_embeddings.weight"] = val.clone()
+                        state_dict["spatial_aggregator.spatial_selected_tokens"] = val[:4].clone()
                         continue
                     if model.sim_header == "seqTransf" and key.find("transformer.resblocks") == 0:
                         num_layer = int(key.split(".")[2])
                         # cut from beginning
+                        # if num_layer < 2:  # hard code for spatial aggregator
+                        #     state_dict[key.replace("transformer.", "spatial_aggregator.")] = val.clone()
+                        #     if key.find("ln_1") > 0:
+                        #         state_dict[key.replace("transformer.",
+                        #                                "spatial_aggregator.").replace("ln_1", "ln_1_q")] = val.clone()
                         if num_layer < task_config.cross_num_hidden_layers:
-                            state_dict[key.replace("transformer.", "transformerClip.")] = val.clone()
+                            state_dict[key.replace("transformer.", "temporal_transformer.")] = val.clone()
                             continue
         ## <=== End of initialization trick
 
@@ -186,11 +191,15 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         cross_config.max_position_embeddings = context_length
 
         if self.sim_header == "seqTransf":
-            self.frame_position_embeddings = nn.Embedding(cross_config.max_position_embeddings,
-                                                          cross_config.hidden_size)
-            self.transformerClip = TransformerClip(width=transformer_width,
-                                                   layers=self.task_config.cross_num_hidden_layers,
-                                                   heads=transformer_heads, )
+            # self.frame_position_embeddings = nn.Embedding(cross_config.max_position_embeddings,
+            #                                               cross_config.hidden_size)
+            self.temporal_transformer = TemporalTransformer(width=transformer_width,
+                                                            layers=self.task_config.cross_num_hidden_layers,
+                                                            heads=transformer_heads,
+                                                            max_frames=context_length)
+            # self.spatial_aggregator = SpatialAggregationTransformer(width=transformer_width,
+            #                                                         layers=2,
+            #                                                         heads=transformer_heads)
 
         self.loss_fct = CrossEn()
 
@@ -245,23 +254,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             # visual_output shape is (B, T, L, D)
             # visual_mask shape is (B, T)
             # Sequential type: Transformer Encoder
-            B, T, L, D = visual_output.shape
-            visual_output_original = visual_output
-            position_ids = torch.arange(T, dtype=torch.long, device=visual_output.device)
-            position_ids = position_ids.unsqueeze(0).expand(B, -1)
-            frame_position_embeddings = self.frame_position_embeddings(position_ids)  # shape=(B,T,D)
-            visual_output = visual_output + frame_position_embeddings.unsqueeze(2)  # shape=(B,T,L,D)
-
-            video_mask = video_mask.unsqueeze(2).expand(-1, -1, L).reshape(B, -1)  # shape=(B,T*L,D)
-            extended_video_mask = (1.0 - video_mask.unsqueeze(1)) * -1000000.0
-            extended_video_mask = extended_video_mask.expand(-1, video_mask.size(1), -1)
-            visual_output = visual_output.view(B, -1, D)
-            visual_output = visual_output.permute(1, 0, 2)  # NLD -> LND
-            visual_output = self.transformerClip(visual_output, extended_video_mask)
-            visual_output = visual_output.permute(1, 0, 2)  # LND -> NLD
-            visual_output = visual_output.view(B, T, L, D) + visual_output_original
-
-            visual_output = visual_output[:, :, 0, :]
+            visual_output = self.temporal_transformer(visual_output, video_mask)
 
         return visual_output
 
@@ -275,18 +268,28 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
 
         bs_pair = video_mask.size(0)
         visual_hidden = self.clip.encode_image(video, video_frame=video_frame).float()  # shape=(B*T,L,D)
-        visual_hidden = visual_hidden.view(bs_pair, -1, visual_hidden.size(-2), visual_hidden.size(-1))  # shape=(B,T,L,D)
+        visual_hidden = visual_hidden.view(bs_pair, -1, visual_hidden.size(-2),
+                                           visual_hidden.size(-1))  # shape=(B,T,L,D)
 
         # select some spatial tokens
         select_num = 5
-        if self.train:
-            select_idx = torch.randperm(visual_hidden.size(2)-1)[:select_num-1] + 1
-            select_idx = torch.cat([torch.zeros([1],dtype=torch.long), select_idx], dim=0)
-            visual_hidden = visual_hidden[:, :, select_idx, :]
+
+        if hasattr(self, 'spatial_aggregator'):
+            B, T, L, D = visual_hidden.shape
+            x_cls = visual_hidden[:, :, :1, :]
+            x_s = self.spatial_aggregator(visual_hidden[:, :, 1:, :].view(B * T, L - 1, D))
+            x_s = x_s.view(B, T, -1, D)
+            visual_hidden = torch.cat([x_cls, x_s], dim=2)
         else:
-            fold = visual_hidden.size(2) // select_num
-            select_idx = torch.arange(start=0, end=visual_hidden.size(2), step=fold)
-            visual_hidden = visual_hidden[:, :, select_idx, :]
+            if self.train:
+                # random select
+                select_idx = torch.randperm(visual_hidden.size(2) - 1)[:select_num - 1] + 1
+                select_idx = torch.cat([torch.zeros([1], dtype=torch.long), select_idx], dim=0)
+                visual_hidden = visual_hidden[:, :, select_idx, :]
+            else:
+                fold = visual_hidden.size(2) // select_num
+                select_idx = torch.arange(start=0, end=visual_hidden.size(2), step=fold)
+                visual_hidden = visual_hidden[:, :, select_idx, :]
 
         visual_hidden = self.encode_temporal(visual_hidden, video_mask)  # shape=(B,T,D)
 
@@ -317,7 +320,6 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         video_mask_un_sum[video_mask_un_sum == 0.] = 1.
         video_out = torch.sum(visual_output, dim=1) / video_mask_un_sum
         return video_out
-
 
     def _get_global_similarity_logits(self, sequence_output, visual_output, video_mask):
         '''

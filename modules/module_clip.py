@@ -14,7 +14,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-
 _MODELS = {
     "RN50": "https://openaipublic.azureedge.net/clip/models/afeb0e10f9e5a86da6080e35cf09123aca3b358a0c3e3b6c78a7b63bc04b6762/RN50.pt",
     "RN101": "https://openaipublic.azureedge.net/clip/models/8fa8567bab74a42d41c5915025a8e4538c3bdbe8804a470a72f30b0d94fab599/RN101.pt",
@@ -31,6 +30,7 @@ _PT_NAME = {
     "ViT-B/32": "ViT-B-32.pt",
     "ViT-B/16": "ViT-B-16.pt",
 }
+
 
 def _download(url: str, root: str = os.path.expanduser("~/.cache/clip")):
     os.makedirs(root, exist_ok=True)
@@ -63,9 +63,11 @@ def _download(url: str, root: str = os.path.expanduser("~/.cache/clip")):
 
     return download_target
 
+
 def available_models():
     """Returns the names of available CLIP models"""
     return list(_MODELS.keys())
+
 
 # =============================
 
@@ -243,16 +245,17 @@ class ResidualAttentionBlock(nn.Module):
     def attention(self, x: torch.Tensor):
         attn_mask_ = self.attn_mask
         if self.attn_mask is not None and hasattr(self.attn_mask, '__call__'):
-            attn_mask_ = self.attn_mask(x.size(0))   # LND
+            attn_mask_ = self.attn_mask(x.size(0))  # LND
 
         attn_mask_ = attn_mask_.to(dtype=x.dtype, device=x.device) if attn_mask_ is not None else None
         return self.attn(x, x, x, need_weights=False, attn_mask=attn_mask_)[0]
 
-    def forward(self, x_tuple:tuple):
+    def forward(self, x_tuple: tuple):
         x, video_frame = x_tuple
         x = x + self.attention(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return (x, video_frame)
+
 
 class TokenShiftResidualAttentionBlock(nn.Module):
     def __init__(self, d_model: int, n_head: int, attn_mask=None):
@@ -271,37 +274,38 @@ class TokenShiftResidualAttentionBlock(nn.Module):
     def attention(self, x: torch.Tensor, video_frame: int):
         attn_mask_ = self.attn_mask
         if self.attn_mask is not None and hasattr(self.attn_mask, '__call__'):
-            attn_mask_ = self.attn_mask(x.size(0))   # LND
+            attn_mask_ = self.attn_mask(x.size(0))  # LND
 
         attn_mask_ = attn_mask_.to(dtype=x.dtype, device=x.device) if attn_mask_ is not None else None
-        
+
         #  make token shift operation
         n_div = 32
-        L, N, D = x.shape 
+        L, N, D = x.shape
         fold = L // n_div
         x = x.view(L, -1, video_frame, D)  # (L,B,T,D)
         out = torch.zeros_like(x)
-        out[:,:,:,:] = x[:,:,:,:]
+        out[:, :, :, :] = x[:, :, :, :]
 
         ##############left and right shift##############
         lshift_indices = torch.arange(start=1, end=L, step=fold)
-        out[lshift_indices, :, 1:, :] = x[lshift_indices, :, :-1, :] # f_t = f_t-1
-        rshift_indices = torch.arange(start=1+3, end=L, step=fold)
-        out[rshift_indices, :, :-1, :] = x[rshift_indices, :, 1:, :] # f_t = f_t+1
+        out[lshift_indices, :, 1:, :] = x[lshift_indices, :, :-1, :]  # f_t = f_t-1
+        rshift_indices = torch.arange(start=1 + 3, end=L, step=fold)
+        out[rshift_indices, :, :-1, :] = x[rshift_indices, :, 1:, :]  # f_t = f_t+1
         ##############left and right shift##############
 
         out = out.view(L, N, D)
 
         return self.attn(out, out, out, need_weights=False, attn_mask=attn_mask_)[0]
 
-    def forward(self, x_tuple:tuple):
+    def forward(self, x_tuple: tuple):
         x, video_frame = x_tuple
         x = x + self.attention(self.ln_1(x), video_frame)
         x = x + self.mlp(self.ln_2(x))
         return (x, video_frame)
 
+
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int, attn_mask = None, unchanged_layers=12):
+    def __init__(self, width: int, layers: int, heads: int, attn_mask=None, unchanged_layers=12):
         super().__init__()
         self.width = width
         self.layers = layers
@@ -315,7 +319,7 @@ class Transformer(nn.Module):
 
 class VisualTransformer(nn.Module):
     def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int,
-                 linear_patch: str = '2d',):
+                 linear_patch: str = '2d', ):
         super().__init__()
         self.input_resolution = input_resolution
         self.output_dim = output_dim
@@ -345,15 +349,18 @@ class VisualTransformer(nn.Module):
             assert video_frame != -1
             x_3d = x.reshape(-1, video_frame, x.shape[-3], x.shape[-2], x.shape[-1])
             x_3d = x_3d.permute(0, 2, 1, 3, 4)
-            x_3d = self.conv2(x_3d)     # shape = [*, width, frame, grid, grid]
-            x_3d = x_3d.permute(0, 2, 1, 3, 4)      # shape = [*, frame, width, grid, grid]
-            x = x_3d.reshape(-1, x_3d.shape[-3], x_3d.shape[-2], x_3d.shape[-1]).contiguous() # shape = [*, width, grid, grid]
+            x_3d = self.conv2(x_3d)  # shape = [*, width, frame, grid, grid]
+            x_3d = x_3d.permute(0, 2, 1, 3, 4)  # shape = [*, frame, width, grid, grid]
+            x = x_3d.reshape(-1, x_3d.shape[-3], x_3d.shape[-2],
+                             x_3d.shape[-1]).contiguous()  # shape = [*, width, grid, grid]
         else:
             x = self.conv1(x)  # shape = [*, width, grid, grid]
 
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
-        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = torch.cat(
+            [self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
+             x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)
         x = self.ln_pre(x)
 
@@ -572,12 +579,14 @@ def build_model(state_dict: dict):
 
     if vit:
         vision_width = state_dict["visual.conv1.weight"].shape[0]
-        vision_layers = len([k for k in state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
+        vision_layers = len(
+            [k for k in state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
         vision_patch_size = state_dict["visual.conv1.weight"].shape[-1]
         grid_size = round((state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
         image_resolution = vision_patch_size * grid_size
     else:
-        counts: list = [len(set(k.split(".")[2] for k in state_dict if k.startswith(f"visual.layer{b}"))) for b in [1, 2, 3, 4]]
+        counts: list = [len(set(k.split(".")[2] for k in state_dict if k.startswith(f"visual.layer{b}"))) for b in
+                        [1, 2, 3, 4]]
         vision_layers = tuple(counts)
         vision_width = state_dict["visual.layer1.0.conv1.weight"].shape[0]
         output_width = round((state_dict["visual.attnpool.positional_embedding"].shape[0] - 1) ** 0.5)

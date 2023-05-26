@@ -32,6 +32,7 @@ class CrossConfig(PretrainedConfig):
     pretrained_model_archive_map = PRETRAINED_MODEL_ARCHIVE_MAP
     config_name = CONFIG_NAME
     weights_name = WEIGHTS_NAME
+
     def __init__(self,
                  vocab_size_or_config_json_file,
                  hidden_size=768,
@@ -89,9 +90,11 @@ class CrossConfig(PretrainedConfig):
             raise ValueError("First argument must be either a vocabulary size (int)"
                              "or the path to a pretrained model config file (str)")
 
+
 class QuickGELU(nn.Module):
     def forward(self, x: torch.Tensor):
         return x * torch.sigmoid(1.702 * x)
+
 
 class ResidualAttentionBlock(nn.Module):
     def __init__(self, d_model: int, n_head: int):
@@ -119,6 +122,7 @@ class ResidualAttentionBlock(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return (x, attn_mask)
 
+
 class Transformer(nn.Module):
     def __init__(self, width: int, layers: int, heads: int):
         super().__init__()
@@ -129,9 +133,90 @@ class Transformer(nn.Module):
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         return self.resblocks((x, attn_mask))[0]
 
+
+class TemporalTransformer(nn.Module):
+    def __init__(self, width: int, layers: int, heads: int, max_frames: int):
+        super().__init__()
+        self.width = width
+        self.layers = layers
+        self.frame_position_embeddings = nn.Embedding(max_frames, width)
+        self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads) for _ in range(layers)])
+
+    def forward(self, x: torch.Tensor, video_mask: torch.Tensor):
+        B, T, L, D = x.shape
+        x_original = x
+        position_ids = torch.arange(T, dtype=torch.long, device=x.device)
+        position_ids = position_ids.unsqueeze(0).expand(B, -1)
+        frame_position_embeddings = self.frame_position_embeddings(position_ids)  # shape=(B,T,D)
+        x = x + frame_position_embeddings.unsqueeze(2)  # shape=(B,T,L,D)
+
+        video_mask = video_mask.unsqueeze(2).expand(-1, -1, L).reshape(B, -1)  # shape=(B,T*L,D)
+        extended_video_mask = (1.0 - video_mask.unsqueeze(1)) * -1000000.0
+        extended_video_mask = extended_video_mask.expand(-1, video_mask.size(1), -1)
+        x = x.view(B, -1, D)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.resblocks((x, extended_video_mask))[0]
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = x.view(B, T, L, D) + x_original
+
+        x = x[:, :, 0, :]
+        return x
+
+
+class SpatialAggregationResidualAttentionBlock(nn.Module):
+    def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None):
+        super().__init__()
+
+        self.attn = nn.MultiheadAttention(d_model, n_head)
+        self.ln_1 = LayerNorm(d_model)
+        self.ln_1_q = LayerNorm(d_model)
+        self.mlp = nn.Sequential(OrderedDict([
+            ("c_fc", nn.Linear(d_model, d_model * 4)),
+            ("gelu", QuickGELU()),
+            ("c_proj", nn.Linear(d_model * 4, d_model))
+        ]))
+        self.ln_2 = LayerNorm(d_model)
+        self.attn_mask = attn_mask
+
+    def attention(self, q: torch.Tensor, x: torch.Tensor):
+        self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
+        return self.attn(q, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
+
+    def forward(self, para_tuple: tuple):
+        q, x = para_tuple
+        q = q + self.attention(self.ln_1_q(q), self.ln_1(x))
+        q = q + self.mlp(self.ln_2(q))
+        return (q, x)
+
+
+class SpatialAggregationTransformer(nn.Module):
+    def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None,
+                 num_spatial_tokens: int = 4):
+        super().__init__()
+        self.width = width
+        self.layers = layers
+        scale = width ** -0.5
+        self.spatial_selected_tokens = nn.Parameter(scale * torch.randn((num_spatial_tokens, width)))
+        self.resblocks = nn.Sequential(*[SpatialAggregationResidualAttentionBlock(width, heads, attn_mask)
+                                         for _ in range(layers)])
+
+    def forward(self, x: torch.Tensor):
+        # x shape = (B*T, L, D)
+        spatial_selected_tokens = self.spatial_selected_tokens.to(x.dtype).unsqueeze(0) \
+            .expand(x.size(0), -1, -1)  # x shape = (B*T, K, D)
+
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        spatial_selected_tokens = spatial_selected_tokens.permute(1, 0, 2)  # NLD -> LND
+        spatial_selected_tokens = self.resblocks((spatial_selected_tokens, x))[0]
+        spatial_selected_tokens = spatial_selected_tokens.permute(1, 0, 2)  # LND -> NLD
+
+        return spatial_selected_tokens
+
+
 class CrossEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings.
     """
+
     def __init__(self, config):
         super(CrossEmbeddings, self).__init__()
 
@@ -141,7 +226,6 @@ class CrossEmbeddings(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, concat_embeddings, concat_type=None):
-
         batch_size, seq_length = concat_embeddings.size(0), concat_embeddings.size(1)
         # if concat_type is None:
         #     concat_type = torch.zeros(batch_size, concat_type).to(concat_embeddings.device)
@@ -152,10 +236,11 @@ class CrossEmbeddings(nn.Module):
         # token_type_embeddings = self.token_type_embeddings(concat_type)
         position_embeddings = self.position_embeddings(position_ids)
 
-        embeddings = concat_embeddings + position_embeddings # + token_type_embeddings
+        embeddings = concat_embeddings + position_embeddings  # + token_type_embeddings
         # embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
+
 
 class CrossPooler(nn.Module):
     def __init__(self, config):
@@ -172,6 +257,7 @@ class CrossPooler(nn.Module):
         pooled_output = self.dense(pooled_output)
         pooled_output = self.activation(pooled_output)
         return pooled_output
+
 
 class CrossModel(PreTrainedModel):
 
@@ -193,7 +279,7 @@ class CrossModel(PreTrainedModel):
         transformer_width = config.hidden_size
         transformer_layers = config.num_hidden_layers
         transformer_heads = config.num_attention_heads
-        self.transformer = Transformer(width=transformer_width, layers=transformer_layers, heads=transformer_heads,)
+        self.transformer = Transformer(width=transformer_width, layers=transformer_layers, heads=transformer_heads, )
         self.pooler = CrossPooler(config)
         self.apply(self.init_weights)
 
