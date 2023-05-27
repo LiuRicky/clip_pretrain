@@ -160,33 +160,15 @@ class MSRVTT_TrainDataLoader(Dataset):
         self.slice_framepos = slice_framepos
         assert self.slice_framepos in [0, 1, 2]
 
-        self.unfold_sentences = unfold_sentences
         self.sample_len = 0
-        if self.unfold_sentences:
-            train_video_ids = list(self.csv['video_id'].values)
-            self.sentences_dict = {}
-            for itm in self.data['sentences']:
-                if itm['video_id'] in train_video_ids:
-                    self.sentences_dict[len(self.sentences_dict)] = (itm['video_id'], itm['caption'])
-            self.sample_len = len(self.sentences_dict)
-        else:
-            num_sentences = 0
-            self.sentences = defaultdict(list)
-            s_video_id_set = set()
-            for itm in self.data['sentences']:
-                self.sentences[itm['video_id']].append(itm['caption'])
-                num_sentences += 1
-                s_video_id_set.add(itm['video_id'])
 
-            # Use to find the clips in the same video
-            self.parent_ids = {}
-            self.children_video_ids = defaultdict(list)
-            for itm in self.data['videos']:
-                vid = itm["video_id"]
-                url_posfix = itm["url"].split("?v=")[-1]
-                self.parent_ids[vid] = url_posfix
-                self.children_video_ids[url_posfix].append(vid)
-            self.sample_len = len(self.csv)
+        train_video_ids = list(self.csv['video_id'].values)
+        self.sentences_dict = {}
+        for itm in self.data['sentences']:
+            if itm['video_id'] in train_video_ids:
+                self.sentences_dict[len(self.sentences_dict)] = (itm['video_id'], itm['caption'])
+        self.sample_len = len(self.sentences_dict)
+
 
         self.rawVideoExtractor = RawVideoExtractor(framerate=feature_framerate, size=image_resolution)
         self.SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
@@ -203,10 +185,7 @@ class MSRVTT_TrainDataLoader(Dataset):
         pairs_segment = np.zeros((k, self.max_words), dtype=np.long)
 
         for i, video_id in enumerate(choice_video_ids):
-            if caption is not None:
-                words = self.tokenizer.tokenize(caption)
-            else:
-                words = self._get_single_text(video_id)
+            words = self.tokenizer.tokenize(caption)
 
             words = [self.SPECIAL_TOKEN["CLS_TOKEN"]] + words
             total_length_with_CLS = self.max_words - 1
@@ -231,11 +210,6 @@ class MSRVTT_TrainDataLoader(Dataset):
 
         return pairs_text, pairs_mask, pairs_segment, choice_video_ids
 
-    def _get_single_text(self, video_id):
-        rind = random.randint(0, len(self.sentences[video_id]) - 1)
-        caption = self.sentences[video_id][rind]
-        words = self.tokenizer.tokenize(caption)
-        return words
 
     def _get_rawvideo(self, choice_video_ids):
         video_mask = np.zeros((len(choice_video_ids), self.max_frames), dtype=np.long)
@@ -275,10 +249,8 @@ class MSRVTT_TrainDataLoader(Dataset):
         return video, video_mask
 
     def __getitem__(self, idx):
-        if self.unfold_sentences:
-            video_id, caption = self.sentences_dict[idx]
-        else:
-            video_id, caption = self.csv['video_id'].values[idx], None
+        video_id, caption = self.sentences_dict[idx]
+        
         pairs_text, pairs_mask, pairs_segment, choice_video_ids = self._get_text(video_id, caption)
         video, video_mask = self._get_rawvideo(choice_video_ids)
         return pairs_text, pairs_mask, pairs_segment, video, video_mask

@@ -6,6 +6,7 @@ from dataloaders.dataloader_msvd_retrieval import MSVD_DataLoader
 from dataloaders.dataloader_lsmdc_retrieval import LSMDC_DataLoader
 from dataloaders.dataloader_activitynet_retrieval import ActivityNet_DataLoader
 from dataloaders.dataloader_didemo_retrieval import DiDeMo_DataLoader
+from dataloaders.dataloader_pretrain import Pretrain_TrainDataLoader
 
 def dataloader_msrvtt_train(args, tokenizer):
     msrvtt_dataset = MSRVTT_TrainDataLoader(
@@ -26,7 +27,7 @@ def dataloader_msrvtt_train(args, tokenizer):
         msrvtt_dataset,
         batch_size=args.batch_size // args.n_gpu,
         num_workers=args.num_thread_reader,
-        pin_memory=False,
+        pin_memory=True,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         drop_last=True,
@@ -73,7 +74,7 @@ def dataloader_msvd_train(args, tokenizer):
         msvd_dataset,
         batch_size=args.batch_size // args.n_gpu,
         num_workers=args.num_thread_reader,
-        pin_memory=False,
+        pin_memory=True,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         drop_last=True,
@@ -121,7 +122,7 @@ def dataloader_lsmdc_train(args, tokenizer):
         lsmdc_dataset,
         batch_size=args.batch_size // args.n_gpu,
         num_workers=args.num_thread_reader,
-        pin_memory=False,
+        pin_memory=True,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         drop_last=True,
@@ -169,7 +170,7 @@ def dataloader_activity_train(args, tokenizer):
         activity_dataset,
         batch_size=args.batch_size // args.n_gpu,
         num_workers=args.num_thread_reader,
-        pin_memory=False,
+        pin_memory=True,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         drop_last=True,
@@ -217,7 +218,7 @@ def dataloader_didemo_train(args, tokenizer):
         didemo_dataset,
         batch_size=args.batch_size // args.n_gpu,
         num_workers=args.num_thread_reader,
-        pin_memory=False,
+        pin_memory=True,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         drop_last=True,
@@ -246,6 +247,30 @@ def dataloader_didemo_test(args, tokenizer, subset="test"):
     )
     return dataloader_didemo, len(didemo_testset)
 
+def dataloader_pretrain_train(args, tokenizer):
+    pretrain_dataset = Pretrain_TrainDataLoader(
+        jsonl_path=args.data_path,
+        features_path=args.features_path,
+        max_words=args.max_words,
+        feature_framerate=args.feature_framerate,
+        tokenizer=tokenizer,
+        max_frames=args.max_frames,
+        frame_order=args.train_frame_order,
+        slice_framepos=args.slice_framepos,
+    )
+
+    train_sampler = torch.utils.data.distributed.DistributedSampler(pretrain_dataset)
+    dataloader = DataLoader(
+        pretrain_dataset,
+        batch_size=args.batch_size // args.n_gpu,
+        num_workers=args.num_thread_reader,
+        pin_memory=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        drop_last=True,
+    )
+
+    return dataloader, len(pretrain_dataset), train_sampler
 
 DATALOADER_DICT = {}
 DATALOADER_DICT["msrvtt"] = {"train":dataloader_msrvtt_train, "val":dataloader_msrvtt_test, "test":None}
@@ -253,3 +278,4 @@ DATALOADER_DICT["msvd"] = {"train":dataloader_msvd_train, "val":dataloader_msvd_
 DATALOADER_DICT["lsmdc"] = {"train":dataloader_lsmdc_train, "val":dataloader_lsmdc_test, "test":dataloader_lsmdc_test}
 DATALOADER_DICT["activity"] = {"train":dataloader_activity_train, "val":dataloader_activity_test, "test":None}
 DATALOADER_DICT["didemo"] = {"train":dataloader_didemo_train, "val":dataloader_didemo_test, "test":dataloader_didemo_test}
+DATALOADER_DICT["pretrain"] = {"train":dataloader_pretrain_train, "val":dataloader_msrvtt_test, "test":None}
