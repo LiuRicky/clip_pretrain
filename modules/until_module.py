@@ -25,6 +25,7 @@ from modules.until_config import PretrainedConfig
 
 logger = logging.getLogger(__name__)
 
+
 def gelu(x):
     """Implementation of the gelu activation function.
         For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
@@ -32,10 +33,13 @@ def gelu(x):
     """
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
+
 def swish(x):
     return x * torch.sigmoid(x)
 
+
 ACT2FN = {"gelu": gelu, "relu": torch.nn.functional.relu, "swish": swish}
+
 
 class LayerNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-12):
@@ -52,10 +56,12 @@ class LayerNorm(nn.Module):
         x = (x - u) / torch.sqrt(s + self.variance_epsilon)
         return self.weight * x + self.bias
 
+
 class PreTrainedModel(nn.Module):
     """ An abstract class to handle weights initialization and
         a simple interface for dowloading and loading pretrained models.
     """
+
     def __init__(self, config, *inputs, **kwargs):
         super(PreTrainedModel, self).__init__()
         if not isinstance(config, PretrainedConfig):
@@ -163,7 +169,7 @@ class PreTrainedModel(nn.Module):
             return first_tuple[1].dtype
 
     @classmethod
-    def from_pretrained(cls, config, state_dict=None,  *inputs, **kwargs):
+    def from_pretrained(cls, config, state_dict=None, *inputs, **kwargs):
         """
         Instantiate a PreTrainedModel from a pre-trained model file or a pytorch state dict.
         Download and cache the pre-trained model file if needed.
@@ -176,11 +182,12 @@ class PreTrainedModel(nn.Module):
 
         return model
 
+
 ##################################
 ###### LOSS FUNCTION #############
 ##################################
 class CrossEn(nn.Module):
-    def __init__(self,):
+    def __init__(self, ):
         super(CrossEn, self).__init__()
 
     def forward(self, sim_matrix):
@@ -190,8 +197,9 @@ class CrossEn(nn.Module):
         sim_loss = nce_loss.mean()
         return sim_loss
 
+
 class MILNCELoss(nn.Module):
-    def __init__(self, batch_size=1, n_pair=1,):
+    def __init__(self, batch_size=1, n_pair=1, ):
         super(MILNCELoss, self).__init__()
         self.batch_size = batch_size
         self.n_pair = n_pair
@@ -215,10 +223,11 @@ class MILNCELoss(nn.Module):
         new_logpt = -torch.logsumexp(masked_logpt, dim=-1)
 
         logpt_choice = torch.zeros_like(new_logpt)
-        mark_ind = torch.arange(self.batch_size).to(sim_matrix.device) * self.n_pair + (self.n_pair//2)
+        mark_ind = torch.arange(self.batch_size).to(sim_matrix.device) * self.n_pair + (self.n_pair // 2)
         logpt_choice[mark_ind] = 1
         sim_loss = new_logpt.masked_select(logpt_choice.to(dtype=self.bool_dtype)).mean()
         return sim_loss
+
 
 class MaxMarginRankingLoss(nn.Module):
     def __init__(self,
@@ -227,7 +236,7 @@ class MaxMarginRankingLoss(nn.Module):
                  batch_size=1,
                  n_pair=1,
                  hard_negative_rate=0.5,
-        ):
+                 ):
         super(MaxMarginRankingLoss, self).__init__()
         self.margin = margin
         self.n_pair = n_pair
@@ -250,6 +259,7 @@ class MaxMarginRankingLoss(nn.Module):
             max_margin = max_margin * self.mm_mask.to(max_margin.device)
         return max_margin.mean()
 
+
 class AllGather(torch.autograd.Function):
     """An autograd function that performs allgather on a tensor."""
 
@@ -264,6 +274,20 @@ class AllGather(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         return (
-            grad_output[ctx.batch_size * ctx.rank : ctx.batch_size * (ctx.rank + 1)],
+            grad_output[ctx.batch_size * ctx.rank: ctx.batch_size * (ctx.rank + 1)],
             None,
         )
+
+
+@torch.no_grad()
+def concat_all_gather(tensor):
+    """
+    Performs all_gather operation on the provided tensors.
+    *** Warning ***: torch.distributed.all_gather has no gradient.
+    """
+    tensors_gather = [torch.ones_like(tensor)
+                      for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+
+    output = torch.cat(tensors_gather, dim=0)
+    return output

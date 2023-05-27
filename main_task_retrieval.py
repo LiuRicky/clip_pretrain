@@ -104,6 +104,13 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
 
     parser.add_argument("--pretrained_clip_name", default="ViT-B/32", type=str, help="Choose a CLIP version")
 
+    parser.add_argument('--loss_type', type=str, default="itc", choices=["itc", "mom"],
+                        help="loss type, itc or mom")
+    # negtive queue settings
+    parser.add_argument("--queue_size", default=1024, type=int, help="negtive queue size")
+    parser.add_argument("--momentum", default=0.995, type=float, help="momentum update ratio")
+    parser.add_argument("--alpha", default=0.0, type=float, help="alpha ratio")
+    
     args = parser.parse_args()
 
     if args.sim_header == "tightTransf":
@@ -523,6 +530,7 @@ def main():
     ## ####################################
     # train and eval
     ## ####################################
+    global_start_time = time.time()
     if args.do_train:
         train_dataloader, train_length, train_sampler = DATALOADER_DICT[args.datatype]["train"](args, tokenizer)
         num_train_optimization_steps = (int(len(train_dataloader) + args.gradient_accumulation_steps - 1)
@@ -577,6 +585,10 @@ def main():
     elif args.do_eval:
         if args.local_rank == 0:
             eval_epoch(args, model, test_dataloader, device, n_gpu)
+
+    if args.local_rank == 0:
+        logger.info("Total Training time is {}".format(time.time()-global_start_time))
+
 
 if __name__ == "__main__":
     main()

@@ -2,12 +2,14 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import copy
 import logging
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
-from modules.until_module import PreTrainedModel, AllGather, CrossEn
+from modules.until_module import PreTrainedModel, AllGather, concat_all_gather
 from modules.module_cross import CrossConfig, SpatialAggregationTransformer, TemporalTransformer
 
 from modules.module_clip import CLIP, convert_weights
@@ -64,7 +66,7 @@ class CLIP4ClipPreTrainedModel(PreTrainedModel, nn.Module):
                 for key, val in clip_state_dict.items():
                     if key == "positional_embedding":
                         state_dict["temporal_transformer.frame_position_embeddings.weight"] = val.clone()
-                        state_dict["spatial_aggregator.spatial_selected_tokens"] = val[:4].clone()
+                        # state_dict["spatial_aggregator.spatial_selected_tokens"] = val[:4].clone()
                         continue
                     if model.sim_header == "seqTransf" and key.find("transformer.resblocks") == 0:
                         num_layer = int(key.split(".")[2])
@@ -82,6 +84,8 @@ class CLIP4ClipPreTrainedModel(PreTrainedModel, nn.Module):
         if state_dict is not None:
             model = cls.init_preweight(model, state_dict, task_config=task_config)
 
+        if task_config.loss_type == 'mom':
+            model.copy_params()
         return model
 
 
@@ -111,36 +115,18 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
 
         assert self.task_config.max_words + self.task_config.max_frames <= cross_config.max_position_embeddings
 
-        self._stage_one = True
-        self._stage_two = False
-
-        show_log(task_config, "Stage-One:{}, Stage-Two:{}".format(self._stage_one, self._stage_two))
-
         self.loose_type = False
-        if self._stage_one and check_attr('loose_type', self.task_config):
+        if check_attr('loose_type', self.task_config):
             self.loose_type = True
             show_log(task_config, "Test retrieval by loose type.")
 
         # CLIP Encoders: From OpenAI: CLIP [https://github.com/openai/CLIP] ===>
-        vit = "visual.proj" in clip_state_dict
-        assert vit
-        if vit:
-            vision_width = clip_state_dict["visual.conv1.weight"].shape[0]
-            vision_layers = len(
-                [k for k in clip_state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
-            vision_patch_size = clip_state_dict["visual.conv1.weight"].shape[-1]
-            grid_size = round((clip_state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
-            image_resolution = vision_patch_size * grid_size
-        else:
-            counts: list = [len(set(k.split(".")[2] for k in clip_state_dict if k.startswith(f"visual.layer{b}"))) for b
-                            in
-                            [1, 2, 3, 4]]
-            vision_layers = tuple(counts)
-            vision_width = clip_state_dict["visual.layer1.0.conv1.weight"].shape[0]
-            output_width = round((clip_state_dict["visual.attnpool.positional_embedding"].shape[0] - 1) ** 0.5)
-            vision_patch_size = None
-            assert output_width ** 2 + 1 == clip_state_dict["visual.attnpool.positional_embedding"].shape[0]
-            image_resolution = output_width * 32
+        vision_width = clip_state_dict["visual.conv1.weight"].shape[0]
+        vision_layers = len(
+            [k for k in clip_state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
+        vision_patch_size = clip_state_dict["visual.conv1.weight"].shape[-1]
+        grid_size = round((clip_state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
+        image_resolution = vision_patch_size * grid_size
 
         embed_dim = clip_state_dict["text_projection"].shape[1]
         context_length = clip_state_dict["positional_embedding"].shape[0]
@@ -201,9 +187,60 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             #                                                         layers=2,
             #                                                         heads=transformer_heads)
 
-        self.loss_fct = CrossEn()
+        self.loss_type = task_config.loss_type
+        if self.loss_type == 'mom':
+            # momentum encoder
+            self.clip_m = copy.deepcopy(self.clip)
+            self.temporal_transformer_m = copy.deepcopy(self.temporal_transformer)
+            self.model_pairs = [[self.clip, self.clip_m],
+                                [self.temporal_transformer, self.temporal_transformer_m],
+                                ]
+            # create the queue
+            self.queue_size = task_config.queue_size
+            self.momentum = task_config.momentum
+            self.alpha = task_config.alpha
+            self.register_buffer("text_queue", torch.randn((self.queue_size, 1, embed_dim)))
+            self.register_buffer("video_mask_queue",
+                                 torch.ones((self.queue_size, task_config.max_frames), dtype=torch.long))
+            self.register_buffer("video_queue", torch.randn((self.queue_size, task_config.max_frames, embed_dim)))
+            self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
         self.apply(self.init_weights)
+
+    @torch.no_grad()
+    def copy_params(self):
+        for model_pair in self.model_pairs:
+            for param, param_m in zip(model_pair[0].parameters(), model_pair[1].parameters()):
+                param_m.data.copy_(param.data)  # initialize
+                param_m.requires_grad = False  # not update by gradient
+        logger.info("Copy params from module to momentum modules done")
+
+    @torch.no_grad()
+    def _momentum_update(self):
+        for model_pair in self.model_pairs:
+            for param, param_m in zip(model_pair[0].parameters(), model_pair[1].parameters()):
+                param_m.data = param_m.data * self.momentum + param.data * (1. - self.momentum)
+
+    @torch.no_grad()
+    def _dequeue_and_enqueue(self, video_feat, video_mask, text_feat):
+        # gather keys before updating queue
+        video_feat, video_mask, text_feat = video_feat.contiguous(), video_mask.contiguous(), text_feat.contiguous()
+        video_feats = concat_all_gather(video_feat)
+        video_masks = concat_all_gather(video_mask)
+        text_feats = concat_all_gather(text_feat)
+
+        batch_size = video_feats.shape[0]
+
+        ptr = int(self.queue_ptr)
+        assert self.queue_size % batch_size == 0  # for simplicity
+
+        # replace the keys at ptr (dequeue and enqueue)
+        self.video_queue[ptr:ptr + batch_size, :, :] = video_feats
+        self.video_mask_queue[ptr:ptr + batch_size, :] = video_masks
+        self.text_queue[ptr:ptr + batch_size, :, :] = text_feats
+        ptr = (ptr + batch_size) % self.queue_size  # move pointer
+
+        self.queue_ptr[0] = ptr
 
     def forward(self, input_ids, token_type_ids, attention_mask, video, video_mask=None):
         input_ids = input_ids.view(-1, input_ids.shape[-1])
@@ -221,14 +258,28 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                                                          video, video_mask, shaped=True,
                                                                          video_frame=video_frame)
 
+        if self.loss_type == "mom":
+            # get momentum features
+            with torch.no_grad():
+                self._momentum_update()
+                sequence_output_m, visual_output_m = self.get_sequence_visual_output_m(input_ids, token_type_ids,
+                                                                                       attention_mask,
+                                                                                       video, video_mask, shaped=True,
+                                                                                       video_frame=video_frame)
+
         if self.training:
             loss = 0.
-            sim_matrix = self.get_similarity_logits(sequence_output, visual_output, attention_mask, video_mask,
-                                                    shaped=True, loose_type=self.loose_type)
-            sim_loss1 = self.loss_fct(sim_matrix)
-            sim_loss2 = self.loss_fct(sim_matrix.T)
-            sim_loss = (sim_loss1 + sim_loss2) / 2
-            loss += sim_loss
+            if self.loss_type == 'itc':
+                sim_matrix = self.get_similarity_logits(sequence_output, visual_output, attention_mask, video_mask,
+                                                        shaped=True, loose_type=self.loose_type)
+                sim_loss1 = -torch.diag(F.log_softmax(sim_matrix, dim=-1)).mean()
+                sim_loss2 = -torch.diag(F.log_softmax(sim_matrix.T, dim=-1)).mean()
+                sim_loss = (sim_loss1 + sim_loss2) / 2
+                loss += sim_loss
+            elif self.loss_type == 'mom':
+                loss += self.get_momentum_loss(sequence_output, visual_output, video_mask,
+                                               sequence_output_m, visual_output_m)
+                self._dequeue_and_enqueue(visual_output_m, video_mask, sequence_output_m)
 
             return loss
         else:
@@ -312,6 +363,76 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         visual_output = self.get_visual_output(video, video_mask, shaped=True, video_frame=video_frame)
 
         return sequence_output, visual_output
+
+    def get_sequence_visual_output_m(self, input_ids, token_type_ids, attention_mask, video, video_mask, shaped=False,
+                                     video_frame=-1):
+        if shaped is False:
+            input_ids = input_ids.view(-1, input_ids.shape[-1])
+            token_type_ids = token_type_ids.view(-1, token_type_ids.shape[-1])
+            attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
+            video_mask = video_mask.view(-1, video_mask.shape[-1])
+
+            video = torch.as_tensor(video).float()
+            b, pair, bs, ts, channel, h, w = video.shape
+            video = video.view(b * pair * bs * ts, channel, h, w)
+            video_frame = bs * ts
+
+        # encode text momentum begin ######################
+        bs_pair = input_ids.size(0)
+        sequence_output_m = self.clip_m.encode_text(input_ids).float()
+        sequence_output_m = sequence_output_m.view(bs_pair, -1, sequence_output_m.size(-1))
+        # encode text momentum end ######################
+
+        # encode video momentum begin #####################
+        visual_output_m = self.clip_m.encode_image(video, video_frame=video_frame).float()  # shape=(B*T,L,D)
+        visual_output_m = visual_output_m.view(bs_pair, -1, visual_output_m.size(-2),
+                                               visual_output_m.size(-1))  # shape=(B,T,L,D)
+
+        # select some spatial tokens
+        select_num = 5
+        if hasattr(self, 'spatial_aggregator'):
+            B, T, L, D = visual_output_m.shape
+            x_cls = visual_output_m[:, :, :1, :]
+            x_s = self.spatial_aggregator(visual_output_m[:, :, 1:, :].view(B * T, L - 1, D))
+            x_s = x_s.view(B, T, -1, D)
+            visual_output_m = torch.cat([x_cls, x_s], dim=2)
+        else:
+            if self.train:
+                # random select
+                select_idx = torch.randperm(visual_output_m.size(2) - 1)[:select_num - 1] + 1
+                select_idx = torch.cat([torch.zeros([1], dtype=torch.long), select_idx], dim=0)
+                visual_output_m = visual_output_m[:, :, select_idx, :]
+            else:
+                fold = visual_output_m.size(2) // select_num
+                select_idx = torch.arange(start=0, end=visual_output_m.size(2), step=fold)
+                visual_output_m = visual_output_m[:, :, select_idx, :]
+
+        # encode temporal
+        visual_output_m = self.temporal_transformer_m(visual_output_m, video_mask)
+        # encode video momentum end #####################
+        return sequence_output_m, visual_output_m
+
+    def get_momentum_loss(self, sequence_output, visual_output, video_mask, sequence_output_m, visual_output_m):
+        with torch.no_grad():
+            sequence_output_all = torch.cat([sequence_output_m, self.text_queue.clone().detach()], dim=0)
+            video_mask_all = torch.cat([video_mask, self.video_mask_queue.clone().detach()], dim=0)
+            visual_output_all = torch.cat([visual_output_m, self.video_queue.clone().detach()], dim=0)
+            sim_t2v_m = self._get_frame_text_similarity_logits(sequence_output_m, visual_output_all, video_mask_all)
+            sim_v2t_m = self._get_frame_text_similarity_logits(sequence_output_all, visual_output_m, video_mask).T
+
+            sim_targets = torch.zeros(sim_t2v_m.size()).to(sim_t2v_m.device)
+            sim_targets.fill_diagonal_(1)
+            sim_targets_t2v = self.alpha * F.softmax(sim_t2v_m, dim=1) + (1 - self.alpha) * sim_targets
+            sim_targets_v2t = self.alpha * F.softmax(sim_v2t_m, dim=1) + (1 - self.alpha) * sim_targets
+
+        sim_t2v = self._get_frame_text_similarity_logits(sequence_output, visual_output_all, video_mask_all)
+        sim_v2t = self._get_frame_text_similarity_logits(sequence_output_all, visual_output, video_mask).T
+
+        loss_t2v = -torch.sum(F.log_softmax(sim_t2v, dim=1) * sim_targets_t2v, dim=1).mean()
+        loss_v2t = -torch.sum(F.log_softmax(sim_v2t, dim=1) * sim_targets_v2t, dim=1).mean()
+
+        loss_mom = (loss_v2t + loss_t2v) / 2
+        return loss_mom
 
     def _mean_pooling_for_similarity_visual(self, visual_output, video_mask, ):
         video_mask_un = video_mask.to(dtype=torch.float).unsqueeze(-1)
