@@ -104,7 +104,7 @@ class Pretrain_TrainDataLoader(Dataset):
 
         for i, video_id in enumerate(choice_video_ids):
             # Individual for YoucokII dataset, due to it video format
-            video_path = os.path.join(self.features_path, "{}.mp4".format(video_id))
+            video_path = os.path.join(self.features_path, "{}".format(video_id))
             if os.path.exists(video_path) is False:
                 video_path = video_path.replace(".mp4", ".webm")
 

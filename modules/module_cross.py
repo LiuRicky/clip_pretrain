@@ -144,7 +144,6 @@ class TemporalTransformer(nn.Module):
 
     def forward(self, x: torch.Tensor, video_mask: torch.Tensor):
         B, T, L, D = x.shape
-        x_original = x
         position_ids = torch.arange(T, dtype=torch.long, device=x.device)
         position_ids = position_ids.unsqueeze(0).expand(B, -1)
         frame_position_embeddings = self.frame_position_embeddings(position_ids)  # shape=(B,T,D)
@@ -157,11 +156,21 @@ class TemporalTransformer(nn.Module):
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.resblocks((x, extended_video_mask))[0]
         x = x.permute(1, 0, 2)  # LND -> NLD
-        x = x.view(B, T, L, D) + x_original
+        x = x.view(B, T, L, D)
 
-        x = x[:, :, 0, :]
         return x
 
+class TemporalPredictor(nn.Module):
+    def __init__(self, width: int):
+        super().__init__()
+        self.predictor = nn.Sequential(OrderedDict([
+            ("c_fc", nn.Linear(width, width // 4)),
+            ("gelu", QuickGELU()),
+            ("c_proj", nn.Linear(width // 4, width))
+        ]))
+
+    def forward(self, x:torch.Tensor):
+        return self.predictor(x)
 
 class SpatialAggregationResidualAttentionBlock(nn.Module):
     def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None):

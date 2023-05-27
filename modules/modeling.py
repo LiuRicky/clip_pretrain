@@ -10,7 +10,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from modules.until_module import PreTrainedModel, AllGather, concat_all_gather
-from modules.module_cross import CrossConfig, SpatialAggregationTransformer, TemporalTransformer
+from modules.module_cross import CrossConfig, SpatialAggregationTransformer, TemporalTransformer, TemporalPredictor
 
 from modules.module_clip import CLIP, convert_weights
 
@@ -183,6 +183,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                                             layers=self.task_config.cross_num_hidden_layers,
                                                             heads=transformer_heads,
                                                             max_frames=context_length)
+            self.temporal_predictor = TemporalPredictor(width=transformer_width)
             # self.spatial_aggregator = SpatialAggregationTransformer(width=transformer_width,
             #                                                         layers=2,
             #                                                         heads=transformer_heads)
@@ -268,14 +269,29 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                                                                        video_frame=video_frame)
 
         if self.training:
+            # There is simsiam in training
+            visual_output1, visual_output2, visual_output_temporal1, visual_output_temporal2  = visual_output
             loss = 0.
             if self.loss_type == 'itc':
-                sim_matrix = self.get_similarity_logits(sequence_output, visual_output, attention_mask, video_mask,
+                sim_matrix = self.get_similarity_logits(sequence_output, visual_output1, attention_mask, video_mask,
                                                         shaped=True, loose_type=self.loose_type)
                 sim_loss1 = -torch.diag(F.log_softmax(sim_matrix, dim=-1)).mean()
                 sim_loss2 = -torch.diag(F.log_softmax(sim_matrix.T, dim=-1)).mean()
                 sim_loss = (sim_loss1 + sim_loss2) / 2
                 loss += sim_loss
+
+                sim_matrix = self.get_similarity_logits(sequence_output, visual_output2, attention_mask, video_mask,
+                                                        shaped=True, loose_type=self.loose_type)
+                sim_loss1 = -torch.diag(F.log_softmax(sim_matrix, dim=-1)).mean()
+                sim_loss2 = -torch.diag(F.log_softmax(sim_matrix.T, dim=-1)).mean()
+                sim_loss = (sim_loss1 + sim_loss2) / 2
+                loss += sim_loss
+
+                # temporal simsiam loss
+                p1, p2, z1, z2 = self.get_temporal_simsiam(visual_output_temporal1, visual_output_temporal2, video_mask)
+                simsiam_loss = - torch.log ((F.cosine_similarity(p1, z2).mean() + F.cosine_similarity(p2, z1).mean()) / 2)
+                loss += simsiam_loss
+
             elif self.loss_type == 'mom':
                 loss += self.get_momentum_loss(sequence_output, visual_output, video_mask,
                                                sequence_output_m, visual_output_m)
@@ -305,9 +321,12 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             # visual_output shape is (B, T, L, D)
             # visual_mask shape is (B, T)
             # Sequential type: Transformer Encoder
-            visual_output = self.temporal_transformer(visual_output, video_mask)
+            visual_output_temporal = self.temporal_transformer(visual_output, video_mask)
+            visual_output = visual_output_temporal + visual_output
+            visual_output = visual_output[:, :, 0, :]
+            visual_output_temporal = visual_output_temporal[:, :, 0, :]
 
-        return visual_output
+        return visual_output, visual_output_temporal
 
     def get_visual_output(self, video, video_mask, shaped=False, video_frame=-1):
         if shaped is False:
@@ -331,20 +350,30 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             x_s = self.spatial_aggregator(visual_hidden[:, :, 1:, :].view(B * T, L - 1, D))
             x_s = x_s.view(B, T, -1, D)
             visual_hidden = torch.cat([x_cls, x_s], dim=2)
+            visual_hidden, visual_hidden_temporal = self.encode_temporal(visual_hidden, video_mask)  # shape=(B,T,D)
+            return visual_hidden, visual_hidden_temporal
         else:
-            if self.train:
+            if self.training:
                 # random select
-                select_idx = torch.randperm(visual_hidden.size(2) - 1)[:select_num - 1] + 1
-                select_idx = torch.cat([torch.zeros([1], dtype=torch.long), select_idx], dim=0)
-                visual_hidden = visual_hidden[:, :, select_idx, :]
+                random_idx = torch.randperm(visual_hidden.size(2) - 1)
+                select_idx1 = random_idx[:select_num-1] + 1
+                select_idx2 = random_idx[select_num: select_num*2-1] + 1
+                select_idx1 = torch.cat([torch.zeros([1], dtype=torch.long), select_idx1], dim=0)
+                select_idx2 = torch.cat([torch.zeros([1], dtype=torch.long), select_idx2], dim=0)
+                visual_hidden1 = visual_hidden[:, :, select_idx1, :]
+                visual_hidden2 = visual_hidden[:, :, select_idx2, :]
+
+                visual_hidden1, visual_hidden_temporal1 = self.encode_temporal(visual_hidden1, video_mask)  # shape=(B,T,D)
+                visual_hidden2, visual_hidden_temporal2 = self.encode_temporal(visual_hidden2, video_mask)  # shape=(B,T,D)
+
+                return visual_hidden1, visual_hidden2, visual_hidden_temporal1, visual_hidden_temporal2
             else:
                 fold = visual_hidden.size(2) // select_num
                 select_idx = torch.arange(start=0, end=visual_hidden.size(2), step=fold)
                 visual_hidden = visual_hidden[:, :, select_idx, :]
-
-        visual_hidden = self.encode_temporal(visual_hidden, video_mask)  # shape=(B,T,D)
-
-        return visual_hidden
+                visual_hidden, visual_hidden_temporal = self.encode_temporal(visual_hidden, video_mask)  # shape=(B,T,D)
+                return visual_hidden
+              
 
     def get_sequence_visual_output(self, input_ids, token_type_ids, attention_mask, video, video_mask, shaped=False,
                                    video_frame=-1):
@@ -397,7 +426,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             x_s = x_s.view(B, T, -1, D)
             visual_output_m = torch.cat([x_cls, x_s], dim=2)
         else:
-            if self.train:
+            if self.training:
                 # random select
                 select_idx = torch.randperm(visual_output_m.size(2) - 1)[:select_num - 1] + 1
                 select_idx = torch.cat([torch.zeros([1], dtype=torch.long), select_idx], dim=0)
@@ -408,7 +437,9 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                 visual_output_m = visual_output_m[:, :, select_idx, :]
 
         # encode temporal
-        visual_output_m = self.temporal_transformer_m(visual_output_m, video_mask)
+        visual_output_m_temporal = self.temporal_transformer(visual_output_m, video_mask)
+        visual_output_m = visual_output_m_temporal + visual_output_m
+        visual_output_m = visual_output_m[:, :, 0, :]
         # encode video momentum end #####################
         return sequence_output_m, visual_output_m
 
@@ -502,3 +533,19 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         retrieve_logits = self._get_frame_text_similarity_logits(sequence_output, visual_output, video_mask)
 
         return retrieve_logits
+
+    def get_temporal_simsiam(self, visual_output_temporal1, visual_output_temporal2, video_mask):
+        '''
+        visual_output_temporal (B,T,D)
+        video_mask (B,T)
+        '''
+        p1 = self.temporal_predictor(visual_output_temporal1) 
+        p1 = self._mean_pooling_for_similarity_visual(p1, video_mask)  # BxD
+        p2 = self.temporal_predictor(visual_output_temporal2) 
+        p2 = self._mean_pooling_for_similarity_visual(p2, video_mask)  # BxD
+
+        z1 = self._mean_pooling_for_similarity_visual(visual_output_temporal1, video_mask)
+        z2 = self._mean_pooling_for_similarity_visual(visual_output_temporal2, video_mask)
+
+        return p1, p2, z1.detach(), z2.detach()
+        

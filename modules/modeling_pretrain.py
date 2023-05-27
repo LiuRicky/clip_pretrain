@@ -305,7 +305,9 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             # visual_output shape is (B, T, L, D)
             # visual_mask shape is (B, T)
             # Sequential type: Transformer Encoder
-            visual_output = self.temporal_transformer(visual_output, video_mask)
+            visual_output_temporal = self.temporal_transformer(visual_output, video_mask)
+            visual_output = visual_output_temporal + visual_output
+            visual_output = visual_output[:, :, 0, :]
 
         return visual_output
 
@@ -408,7 +410,9 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                 visual_output_m = visual_output_m[:, :, select_idx, :]
 
         # encode temporal
-        visual_output_m = self.temporal_transformer_m(visual_output_m, video_mask)
+        visual_output_m_temporal = self.temporal_transformer(visual_output_m, video_mask)
+        visual_output_m = visual_output_m_temporal + visual_output_m
+        visual_output_m = visual_output_m[:, :, 0, :]
         # encode video momentum end #####################
         return sequence_output_m, visual_output_m
 

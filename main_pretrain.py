@@ -12,7 +12,7 @@ import time
 import argparse
 from modules.tokenization_clip import SimpleTokenizer as ClipTokenizer
 from modules.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from modules.modeling import CLIP4Clip
+from modules.modeling_pretrain import CLIP4Clip
 from modules.optimization import BertAdam
 
 from util import parallel_apply, get_logger
@@ -107,7 +107,7 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
     parser.add_argument('--loss_type', type=str, default="mom", choices=["itc", "mom"],
                         help="loss type, itc or mom")
     # negtive queue settings
-    parser.add_argument("--queue_size", default=1024, type=int, help="negtive queue size")
+    parser.add_argument("--queue_size", default=51200, type=int, help="negtive queue size")
     parser.add_argument("--momentum", default=0.995, type=float, help="momentum update ratio")
     parser.add_argument("--alpha", default=0.0, type=float, help="alpha ratio")
     
