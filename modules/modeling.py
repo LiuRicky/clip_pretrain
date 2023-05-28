@@ -10,7 +10,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from modules.until_module import PreTrainedModel, AllGather, concat_all_gather
-from modules.module_cross import CrossConfig, SpatialAggregationTransformer, TemporalTransformer, TemporalPredictor
+from modules.module_cross import CrossConfig, SpatialAggregationTransformer, TemporalTransformer, Predictor
 
 from modules.module_clip import CLIP, convert_weights
 
@@ -176,20 +176,26 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
 
         cross_config.max_position_embeddings = context_length
 
+        self.loss_type = task_config.loss_type
+        self.tempsimsiam = False
+        self.mmsimsiam = True
+        self.mom = False
         if self.sim_header == "seqTransf":
-            # self.frame_position_embeddings = nn.Embedding(cross_config.max_position_embeddings,
-            #                                               cross_config.hidden_size)
             self.temporal_transformer = TemporalTransformer(width=transformer_width,
                                                             layers=self.task_config.cross_num_hidden_layers,
                                                             heads=transformer_heads,
                                                             max_frames=context_length)
-            self.temporal_predictor = TemporalPredictor(width=transformer_width)
+            if self.tempsimsiam:
+                self.temporal_predictor = Predictor(width=transformer_width)
             # self.spatial_aggregator = SpatialAggregationTransformer(width=transformer_width,
             #                                                         layers=2,
             #                                                         heads=transformer_heads)
 
-        self.loss_type = task_config.loss_type
-        if self.loss_type == 'mom':
+        if self.mmsimsiam:
+            self.video_predictor = Predictor(width=transformer_width)
+            self.text_predictor = Predictor(width=transformer_width)
+
+        if self.mom:
             # momentum encoder
             self.clip_m = copy.deepcopy(self.clip)
             self.temporal_transformer_m = copy.deepcopy(self.temporal_transformer)
@@ -259,7 +265,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                                                          video, video_mask, shaped=True,
                                                                          video_frame=video_frame)
 
-        if self.loss_type == "mom":
+        if self.mom:
             # get momentum features
             with torch.no_grad():
                 self._momentum_update()
@@ -280,19 +286,26 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                 sim_loss = (sim_loss1 + sim_loss2) / 2
                 loss += sim_loss
 
-                sim_matrix = self.get_similarity_logits(sequence_output, visual_output2, attention_mask, video_mask,
-                                                        shaped=True, loose_type=self.loose_type)
-                sim_loss1 = -torch.diag(F.log_softmax(sim_matrix, dim=-1)).mean()
-                sim_loss2 = -torch.diag(F.log_softmax(sim_matrix.T, dim=-1)).mean()
-                sim_loss = (sim_loss1 + sim_loss2) / 2
-                loss += sim_loss
+                # sim_matrix = self.get_similarity_logits(sequence_output, visual_output2, attention_mask, video_mask,
+                #                                         shaped=True, loose_type=self.loose_type)
+                # sim_loss1 = -torch.diag(F.log_softmax(sim_matrix, dim=-1)).mean()
+                # sim_loss2 = -torch.diag(F.log_softmax(sim_matrix.T, dim=-1)).mean()
+                # sim_loss = (sim_loss1 + sim_loss2) / 2
+                # loss += sim_loss
 
+            if self.tempsimsiam:
                 # temporal simsiam loss
                 p1, p2, z1, z2 = self.get_temporal_simsiam(visual_output_temporal1, visual_output_temporal2, video_mask)
-                simsiam_loss = - torch.log ((F.cosine_similarity(p1, z2).mean() + F.cosine_similarity(p2, z1).mean()) / 2)
+                simsiam_loss = - (torch.log(F.cosine_similarity(p1, z2).mean()) + torch.log(F.cosine_similarity(p2, z1).mean())) / 2
                 loss += simsiam_loss
 
-            elif self.loss_type == 'mom':
+            if self.mmsimsiam:
+                # multimodal simsiam loss
+                sim_t2v_simsiam, sim_v2t_simsiam = self.get_mm_simsiam(sequence_output, visual_output1, video_mask)
+                mm_simsiam_loss = - (torch.log(torch.diag(sim_t2v_simsiam).mean()) + torch.log(torch.diag(sim_v2t_simsiam).mean())) / 2
+                loss += mm_simsiam_loss
+
+            if self.mom:
                 loss += self.get_momentum_loss(sequence_output, visual_output, video_mask,
                                                sequence_output_m, visual_output_m)
                 self._dequeue_and_enqueue(visual_output_m, video_mask, sequence_output_m)
@@ -491,7 +504,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
 
         return retrieve_logits
 
-    def _get_frame_text_similarity_logits(self, sequence_output, visual_output, video_mask):
+    def _get_frame_text_similarity_logits(self, sequence_output, visual_output, video_mask, no_scale=False):
         '''
         sequence_output: shape is (B, 1, D)
         visual_output: shape is (B, T, D)
@@ -511,6 +524,9 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         similarity_matrix_weight = torch.softmax(4 * similarity_matrix_weight, dim=1)
         similarity_matrix = similarity_matrix_weight * similarity_matrix
         similarity_matrix = torch.sum(similarity_matrix, dim=1)
+
+        if no_scale:
+            return similarity_matrix
 
         logit_scale = self.clip.logit_scale.exp()
         retrieve_logits = logit_scale * similarity_matrix
@@ -548,4 +564,17 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         z2 = self._mean_pooling_for_similarity_visual(visual_output_temporal2, video_mask)
 
         return p1, p2, z1.detach(), z2.detach()
+    
+    def get_mm_simsiam(self, sequence_output, visual_output, video_mask):
+        p1 = self.text_predictor(sequence_output) # (B, 1, D)
+        p2 = self.video_predictor(visual_output) # (B, T, D)
+
+        z1 = sequence_output.detach()
+        z2 = visual_output.detach()
+
+        sim_t2v_simsiam = self._get_frame_text_similarity_logits(p1, z2, video_mask, True)
+        sim_v2t_simsiam = self._get_frame_text_similarity_logits(z1, p2, video_mask, True).T
+
+        return sim_t2v_simsiam, sim_v2t_simsiam
+
         

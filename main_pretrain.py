@@ -104,7 +104,7 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
 
     parser.add_argument("--pretrained_clip_name", default="ViT-B/32", type=str, help="Choose a CLIP version")
 
-    parser.add_argument('--loss_type', type=str, default="mom", choices=["itc", "mom"],
+    parser.add_argument('--loss_type', type=str, default="itc", choices=["itc", "mom"],
                         help="loss type, itc or mom")
     # negtive queue settings
     parser.add_argument("--queue_size", default=51200, type=int, help="negtive queue size")
@@ -198,7 +198,7 @@ def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, loc
             p.requires_grad = False
 
     param_optimizer = list(model.named_parameters())
-    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight', 'predictor']
 
     decay_param_tp = [(n, p) for n, p in param_optimizer if not any(nd in n for nd in no_decay)]
     no_decay_param_tp = [(n, p) for n, p in param_optimizer if any(nd in n for nd in no_decay)]

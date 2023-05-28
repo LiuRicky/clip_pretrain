@@ -160,9 +160,10 @@ class TemporalTransformer(nn.Module):
 
         return x
 
-class TemporalPredictor(nn.Module):
+class Predictor(nn.Module):
     def __init__(self, width: int):
         super().__init__()
+        self.ln_pre = LayerNorm(width)
         self.predictor = nn.Sequential(OrderedDict([
             ("c_fc", nn.Linear(width, width // 4)),
             ("gelu", QuickGELU()),
@@ -170,7 +171,7 @@ class TemporalPredictor(nn.Module):
         ]))
 
     def forward(self, x:torch.Tensor):
-        return self.predictor(x)
+        return self.predictor(self.ln_pre(x))
 
 class SpatialAggregationResidualAttentionBlock(nn.Module):
     def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None):
