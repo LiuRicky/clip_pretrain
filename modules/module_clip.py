@@ -305,7 +305,7 @@ class TokenShiftResidualAttentionBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, width: int, layers: int, heads: int, attn_mask=None, unchanged_layers=12):
+    def __init__(self, width: int, layers: int, heads: int, attn_mask=None, unchanged_layers=24):
         super().__init__()
         self.width = width
         self.layers = layers
@@ -331,7 +331,7 @@ class VisualTransformer(nn.Module):
         self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
         self.ln_pre = LayerNorm(width)
 
-        self.transformer = Transformer(width, layers, heads, unchanged_layers=10)
+        self.transformer = Transformer(width, layers, heads)
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))

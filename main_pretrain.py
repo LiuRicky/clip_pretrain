@@ -12,7 +12,7 @@ import time
 import argparse
 from modules.tokenization_clip import SimpleTokenizer as ClipTokenizer
 from modules.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from modules.modeling_pretrain import CLIP4Clip
+from modules.modeling import CLIP4Clip
 from modules.optimization import BertAdam
 
 from util import parallel_apply, get_logger
