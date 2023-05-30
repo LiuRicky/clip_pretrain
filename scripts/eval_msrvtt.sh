@@ -13,4 +13,5 @@ main_task_retrieval.py --do_eval --num_thread_reader=8 \
 --feature_framerate 1 --coef_lr 1e-3 \
 --freeze_layer_num 0  --slice_framepos 2 \
 --loose_type --linear_patch 2d --sim_header seqTransf \
+--init_model /data2/lyq/code/clip_pretrain/ckpts/ckpt_pretrain_base/pytorch_model.bin.2 \
 --pretrained_clip_name ViT-B/16

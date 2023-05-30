@@ -250,7 +250,7 @@ def dataloader_didemo_test(args, tokenizer, subset="test"):
 def dataloader_pretrain_train(args, tokenizer):
     pretrain_dataset = Pretrain_TrainDataLoader(
         jsonl_path=args.data_path,
-        features_path=args.features_path,
+        features_path=args.pretrain_features_path,
         max_words=args.max_words,
         feature_framerate=args.feature_framerate,
         tokenizer=tokenizer,

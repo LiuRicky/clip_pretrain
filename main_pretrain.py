@@ -32,6 +32,7 @@ def get_args(description='CLIP4Clip on Retrieval Task'):
     parser.add_argument('--val_csv', type=str, default='data/.val.csv', help='')
     parser.add_argument('--data_path', type=str, default='data/caption.pickle', help='data pickle file path')
     parser.add_argument('--features_path', type=str, default='data/videos_feature.pickle', help='feature path')
+    parser.add_argument('--pretrain_features_path', type=str, default='/roor/HD_VILA', help='feature path')
 
     parser.add_argument('--num_thread_reader', type=int, default=1, help='')
     parser.add_argument('--lr', type=float, default=0.0001, help='initial learning rate')
@@ -576,11 +577,11 @@ def main():
                 # logger.info("Eval on val dataset")
                 # R1 = eval_epoch(args, model, val_dataloader, device, n_gpu)
 
-                R1 = eval_epoch(args, model, test_dataloader, device, n_gpu)
-                if best_score <= R1:
-                    best_score = R1
-                    best_output_model_file = output_model_file
-                logger.info("The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
+                # R1 = eval_epoch(args, model, test_dataloader, device, n_gpu)
+                # if best_score <= R1:
+                #     best_score = R1
+                #     best_output_model_file = output_model_file
+                # logger.info("The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
 
         ## Uncomment if want to test on the best checkpoint
         # if args.local_rank == 0:
