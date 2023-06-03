@@ -178,7 +178,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
 
         self.loss_type = task_config.loss_type
         self.tempsimsiam = False
-        self.mmsimsiam = False
+        self.mmsimsiam = True
         self.mom = False
         if self.sim_header == "seqTransf":
             self.temporal_transformer = TemporalTransformer(width=transformer_width,
@@ -296,14 +296,20 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             if self.tempsimsiam:
                 # temporal simsiam loss
                 p1, p2, z1, z2 = self.get_temporal_simsiam(visual_output_temporal1, visual_output_temporal2, video_mask)
-                simsiam_loss = (torch.sigmoid(-F.cosine_similarity(p1, z2).mean()) + torch.sigmoid(-F.cosine_similarity(p2, z1).mean())) / 2
-                loss += simsiam_loss
+                # simsiam_loss = (torch.sigmoid(-F.cosine_similarity(p1, z2).mean()) + torch.sigmoid(-F.cosine_similarity(p2, z1).mean())) / 2
+                # loss += simsiam_loss
+                temp_simsiam_loss1 = -torch.diag(F.log_softmax(p1 @ z2.T, dim=-1)).mean()
+                temp_simsiam_loss2 = -torch.diag(F.log_softmax(p2 @ z1.T, dim=-1)).mean()
+                loss += (temp_simsiam_loss1 + temp_simsiam_loss2) / 2
 
             if self.mmsimsiam:
                 # multimodal simsiam loss
                 sim_t2v_simsiam, sim_v2t_simsiam = self.get_mm_simsiam(sequence_output, visual_output1, video_mask)
-                mm_simsiam_loss = (torch.sigmoid(-torch.diag(sim_t2v_simsiam).mean()) + torch.sigmoid(-torch.diag(sim_v2t_simsiam).mean())) / 2
-                loss += mm_simsiam_loss
+                # mm_simsiam_loss = (torch.sigmoid(-torch.diag(sim_t2v_simsiam).mean()) + torch.sigmoid(-torch.diag(sim_v2t_simsiam).mean())) / 2
+                # loss += mm_simsiam_loss
+                simsiam_loss1 = -torch.diag(F.log_softmax(sim_t2v_simsiam, dim=-1)).mean()
+                simsiam_loss2 = -torch.diag(F.log_softmax(sim_v2t_simsiam, dim=-1)).mean()
+                loss += (simsiam_loss1 + simsiam_loss2) / 2
 
             if self.mom:
                 loss += self.get_momentum_loss(sequence_output, visual_output, video_mask,
@@ -450,7 +456,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                 visual_output_m = visual_output_m[:, :, select_idx, :]
 
         # encode temporal
-        visual_output_m_temporal = self.temporal_transformer(visual_output_m, video_mask)
+        visual_output_m_temporal = self.temporal_transformer_m(visual_output_m, video_mask)
         visual_output_m = visual_output_m_temporal + visual_output_m
         visual_output_m = visual_output_m[:, :, 0, :]
         # encode video momentum end #####################
