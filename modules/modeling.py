@@ -178,7 +178,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
 
         self.loss_type = task_config.loss_type
         self.tempsimsiam = False
-        self.mmsimsiam = True
+        self.mmsimsiam = False
         self.mom = False
         if self.sim_header == "seqTransf":
             self.temporal_transformer = TemporalTransformer(width=transformer_width,
@@ -301,6 +301,9 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                 temp_simsiam_loss1 = -torch.diag(F.log_softmax(p1 @ z2.T, dim=-1)).mean()
                 temp_simsiam_loss2 = -torch.diag(F.log_softmax(p2 @ z1.T, dim=-1)).mean()
                 loss += (temp_simsiam_loss1 + temp_simsiam_loss2) / 2
+                # simsiam_loss = - (torch.log(F.cosine_similarity(p1, z2).mean()) + torch.log(F.cosine_similarity(p2, z1).mean())) / 2
+                # simsiam_loss = - (F.cosine_similarity(p1, z2).mean() + F.cosine_similarity(p2, z1).mean()) / 2
+                # loss += simsiam_loss
 
             if self.mmsimsiam:
                 # multimodal simsiam loss
@@ -361,7 +364,9 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                            visual_hidden.size(-1))  # shape=(B,T,L,D)
 
         # select some spatial tokens
-        select_num = 5
+        select_num = 1
+        if self.tempsimsiam:
+            select_num = visual_hidden.shape[2] // 10
 
         if hasattr(self, 'spatial_aggregator'):
             B, T, L, D = visual_hidden.shape
