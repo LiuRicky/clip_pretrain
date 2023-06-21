@@ -291,3 +291,39 @@ def concat_all_gather(tensor):
 
     output = torch.cat(tensors_gather, dim=0)
     return output
+
+
+def random_selection_per_frame_bak(input_tensor, select_num):
+    B, T, L, D = input_tensor.shape
+    output1 = torch.zeros(B, T, select_num, D)
+    output2 = torch.zeros(B, T, select_num, D)
+    for t in range(T):
+        random_idx = torch.randperm(L - 1)
+        select_idx1 = random_idx[:select_num-1] + 1
+        select_idx2 = random_idx[select_num: select_num*2-1] + 1
+        select_idx1 = torch.cat([torch.zeros([1], dtype=torch.long), select_idx1], dim=0)
+        select_idx2 = torch.cat([torch.zeros([1], dtype=torch.long), select_idx2], dim=0)
+        
+        output1[:,t,:,:] = input_tensor[:,t,select_idx1,:]
+        output2[:,t,:,:] = input_tensor[:,t,select_idx2,:]
+    
+    return output1, output2
+
+
+def random_selection_per_frame(input_tensor, select_num):
+    B, T, L, D = input_tensor.shape
+
+    indices = torch.argsort(torch.rand(T, L-1), dim=1)
+    select_idx1 = indices[:,:select_num-1] + 1  # (T, select_num-1)
+    select_idx2 = indices[:,select_num: select_num*2-1] + 1
+
+    select_idx1 = torch.cat([torch.zeros([1,1], dtype=torch.long).expand(T,1), select_idx1], dim=1).to(input_tensor.device)  # (T, select_num)
+    select_idx2 = torch.cat([torch.zeros([1,1], dtype=torch.long).expand(T,1), select_idx2], dim=1).to(input_tensor.device)
+
+    expand_idx1 = select_idx1.unsqueeze(0).unsqueeze(-1).expand(B, T, select_num, D)
+    expand_idx2 = select_idx2.unsqueeze(0).unsqueeze(-1).expand(B, T, select_num, D)
+    
+    output1 = input_tensor.gather(2,expand_idx1)
+    output2 = input_tensor.gather(2,expand_idx2)
+
+    return output1, output2

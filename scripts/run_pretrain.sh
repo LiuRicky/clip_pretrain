@@ -7,7 +7,7 @@ main_pretrain.py --do_train --num_thread_reader=8 \
 --data_path ${DATA_PATH}/HD_VILA_BLIP2 \
 --pretrain_features_path ${DATA_PATH}/HD_VILA \
 --features_path /data1/DATASET/MSRVTT/compress_videos \
---output_dir ckpts/ckpt_pretrain_base \
+--output_dir ckpts/ckpt_pretrain_logsoftmax_tempsimsiam_0.1 \
 --lr 1e-4 --max_words 32 --max_frames 12 --batch_size_val 64 \
 --datatype pretrain --expand_msrvtt_sentences  \
 --feature_framerate 1 --coef_lr 1e-4 \

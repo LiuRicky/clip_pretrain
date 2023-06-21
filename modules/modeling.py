@@ -9,7 +9,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from modules.until_module import PreTrainedModel, AllGather, concat_all_gather
+from modules.until_module import PreTrainedModel, AllGather, concat_all_gather, random_selection_per_frame
 from modules.module_cross import CrossConfig, SpatialAggregationTransformer, TemporalTransformer, Predictor
 
 from modules.module_clip import CLIP, convert_weights
@@ -177,7 +177,8 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         cross_config.max_position_embeddings = context_length
 
         self.loss_type = task_config.loss_type
-        self.tempsimsiam = False
+        self.tempsimsiam = True
+        self.random_select_per_frame = False
         self.mmsimsiam = False
         self.mom = False
         if self.sim_header == "seqTransf":
@@ -378,14 +379,17 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             return visual_hidden, visual_hidden_temporal
         else:
             if self.training:
-                # random select
-                random_idx = torch.randperm(visual_hidden.size(2) - 1)
-                select_idx1 = random_idx[:select_num-1] + 1
-                select_idx2 = random_idx[select_num: select_num*2-1] + 1
-                select_idx1 = torch.cat([torch.zeros([1], dtype=torch.long), select_idx1], dim=0)
-                select_idx2 = torch.cat([torch.zeros([1], dtype=torch.long), select_idx2], dim=0)
-                visual_hidden1 = visual_hidden[:, :, select_idx1, :]
-                visual_hidden2 = visual_hidden[:, :, select_idx2, :]
+                if self.random_select_per_frame:
+                    visual_hidden1, visual_hidden2 = random_selection_per_frame(visual_hidden, select_num)
+                else:
+                    # random select
+                    random_idx = torch.randperm(visual_hidden.size(2) - 1)
+                    select_idx1 = random_idx[:select_num-1] + 1
+                    select_idx2 = random_idx[select_num: select_num*2-1] + 1
+                    select_idx1 = torch.cat([torch.zeros([1], dtype=torch.long), select_idx1], dim=0)
+                    select_idx2 = torch.cat([torch.zeros([1], dtype=torch.long), select_idx2], dim=0)
+                    visual_hidden1 = visual_hidden[:, :, select_idx1, :]
+                    visual_hidden2 = visual_hidden[:, :, select_idx2, :]
 
                 visual_hidden1, visual_hidden_temporal1 = self.encode_temporal(visual_hidden1, video_mask)  # shape=(B,T,D)
                 visual_hidden2, visual_hidden_temporal2 = self.encode_temporal(visual_hidden2, video_mask)  # shape=(B,T,D)
