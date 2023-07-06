@@ -177,7 +177,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         cross_config.max_position_embeddings = context_length
 
         self.loss_type = task_config.loss_type
-        self.tempsimsiam = True
+        self.tempsimsiam = False
         self.random_select_per_frame = False
         self.mmsimsiam = False
         self.mom = False
@@ -351,7 +351,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
 
         return visual_output, visual_output_temporal
 
-    def get_visual_output(self, video, video_mask, shaped=False, video_frame=-1):
+    def get_visual_output(self, video, video_mask, shaped=False, video_frame=-1, test_flag=False):
         if shaped is False:
             video_mask = video_mask.view(-1, video_mask.shape[-1])
             video = torch.as_tensor(video).float()
@@ -365,7 +365,9 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                            visual_hidden.size(-1))  # shape=(B,T,L,D)
 
         # select some spatial tokens
-        select_num = 1
+        select_num = visual_hidden.shape[2] // 10
+        if test_flag:
+            select_num = 1
         if self.tempsimsiam:
             select_num = visual_hidden.shape[2] // 10
 

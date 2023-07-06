@@ -379,7 +379,7 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
 
                 if len(filter_inds) > 0:
                     video, video_mask = video[filter_inds, ...], video_mask[filter_inds, ...]
-                    visual_output = model.get_visual_output(video, video_mask)
+                    visual_output = model.get_visual_output(video, video_mask, test_flag=True)
                     batch_visual_output_list.append(visual_output)
                     batch_list_v.append((video_mask,))
                 total_video_num += b
