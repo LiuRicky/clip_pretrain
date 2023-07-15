@@ -365,8 +365,8 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                            visual_hidden.size(-1))  # shape=(B,T,L,D)
 
         # select some spatial tokens
-        select_num = visual_hidden.shape[2] // 10
-        if test_flag:
+        select_num = 6 # visual_hidden.shape[2] // 40
+        if test_flag and self.tempsimsiam:
             select_num = 1
         if self.tempsimsiam:
             select_num = visual_hidden.shape[2] // 10
@@ -406,7 +406,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
               
 
     def get_sequence_visual_output(self, input_ids, token_type_ids, attention_mask, video, video_mask, shaped=False,
-                                   video_frame=-1):
+                                   video_frame=-1, test_flag=False):
         if shaped is False:
             input_ids = input_ids.view(-1, input_ids.shape[-1])
             token_type_ids = token_type_ids.view(-1, token_type_ids.shape[-1])
@@ -419,7 +419,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             video_frame = bs * ts
 
         sequence_output = self.get_sequence_output(input_ids, token_type_ids, attention_mask, shaped=True)
-        visual_output = self.get_visual_output(video, video_mask, shaped=True, video_frame=video_frame)
+        visual_output = self.get_visual_output(video, video_mask, shaped=True, video_frame=video_frame, test_flag=test_flag)
 
         return sequence_output, visual_output
 

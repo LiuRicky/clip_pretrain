@@ -254,7 +254,7 @@ def load_model(epoch, args, n_gpu, device, model_file=None):
         model.to(device)
     else:
         model = None
-    return model
+    return model.float()
 
 def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, scheduler, global_step, local_rank=0):
     global logger
@@ -384,7 +384,7 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
                     batch_list_v.append((video_mask,))
                 total_video_num += b
             else:
-                sequence_output, visual_output = model.get_sequence_visual_output(input_ids, segment_ids, input_mask, video, video_mask)
+                sequence_output, visual_output = model.get_sequence_visual_output(input_ids, segment_ids, input_mask, video, video_mask, test_flag=True)
 
                 batch_sequence_output_list.append(sequence_output)
                 batch_list_t.append((input_mask, segment_ids,))

@@ -186,7 +186,7 @@ def init_model(args, device, n_gpu, local_rank):
 
     model.to(device)
 
-    return model
+    return model.float()
 
 def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, local_rank, coef_lr=1.):
 
