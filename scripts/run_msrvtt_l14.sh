@@ -1,17 +1,17 @@
-export CUDA_VISIBLE_DEVICES=4,5,6,7
+export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6
 DATA_PATH=/data1/DATASET/MSRVTT
-python -m torch.distributed.launch --nproc_per_node=4 --master_port 23902 \
+python -m torch.distributed.launch --nproc_per_node=6 --master_port 23902 \
 main_task_retrieval.py --do_train --num_thread_reader=12 \
---epochs=5 --batch_size=128 --n_display=50 \
+--epochs=5 --batch_size=96 --n_display=50 \
 --train_csv ${DATA_PATH}/msrvtt_data/MSRVTT_train.9k.csv \
 --val_csv ${DATA_PATH}/msrvtt_data/MSRVTT_JSFUSION_test.csv \
 --data_path ${DATA_PATH}/msrvtt_data/MSRVTT_data.json \
 --features_path ${DATA_PATH}/compress_videos \
---output_dir ckpts/ckpt_pretrain_msrvtt_2M_5e-6_random0.1_logsoftmax \
---lr 5e-5 --max_words 32 --max_frames 12 --batch_size_val 32 \
+--output_dir ckpts/ckpt_pretrain_msrvtt_2M_5e-5_random0.1_logsoftmax_l14 \
+--lr 5e-5 --max_words 32 --max_frames 12 --batch_size_val 30 \
 --datatype msrvtt --expand_msrvtt_sentences  \
 --feature_framerate 1 --coef_lr 2e-3 \
 --freeze_layer_num 0  --slice_framepos 2 \
 --loose_type --linear_patch 2d --sim_header seqTransf \
---init_model ckpts/ckpt_pretrain_logsoftmax_tempsimsiam_0.1/pytorch_model.bin.2 \
---pretrained_clip_name ViT-B/16
+--init_model ckpts/ckpt_pretrain_logsoftmax_tempsimsiam_0.1_2M_1e-4_l14/pytorch_model.bin.2 \
+--pretrained_clip_name ViT-L/14

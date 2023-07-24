@@ -337,6 +337,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         return sequence_hidden
 
     def encode_temporal(self, visual_output, video_mask):
+        visual_output_temporal = None
         if self.sim_header == "meanP":
             # Default: Parameter-free type
             visual_output = visual_output[:, :, 0, :]
@@ -365,7 +366,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                            visual_hidden.size(-1))  # shape=(B,T,L,D)
 
         # select some spatial tokens
-        select_num = 6 # visual_hidden.shape[2] // 40
+        select_num = visual_hidden.shape[2] // 10
         if test_flag and self.tempsimsiam:
             select_num = 1
         if self.tempsimsiam:
