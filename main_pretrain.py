@@ -193,10 +193,10 @@ def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, loc
     if hasattr(model, 'module'):
         model = model.module
 
-    # freeze CLIP params
-    for n, p in model.named_parameters():
-        if "clip." in n:
-            p.requires_grad = False
+    # # freeze CLIP params
+    # for n, p in model.named_parameters():
+    #     if "clip." in n:
+    #         p.requires_grad = False
 
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight', 'predictor']
