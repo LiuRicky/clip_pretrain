@@ -366,7 +366,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                            visual_hidden.size(-1))  # shape=(B,T,L,D)
 
         # select some spatial tokens
-        select_num = 1 # visual_hidden.shape[2] // 10
+        select_num = visual_hidden.shape[2] // 10
         if self.tempsimsiam:
             select_num = visual_hidden.shape[2] // 10
         if test_flag and self.tempsimsiam:
