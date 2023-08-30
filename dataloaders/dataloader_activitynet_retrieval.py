@@ -181,24 +181,13 @@ class ActivityNet_DataLoader(Dataset):
                     end_time = end_time + 1
 
                 # Should be optimized by gathering all asking of this video
-                raw_video_data = self.rawVideoExtractor.get_video_data(video_path, start_time, end_time)
+                raw_video_data = self.rawVideoExtractor.get_video_data(video_path, self.max_frames, start_time, end_time)
                 raw_video_data = raw_video_data['video']
 
                 if len(raw_video_data.shape) > 3:
                     raw_video_data_clip = raw_video_data
                     # L x T x 3 x H x W
-                    raw_video_slice = self.rawVideoExtractor.process_raw_data(raw_video_data_clip)
-                    if self.max_frames < raw_video_slice.shape[0]:
-                        if self.slice_framepos == 0:
-                            video_slice = raw_video_slice[:self.max_frames, ...]
-                        elif self.slice_framepos == 1:
-                            video_slice = raw_video_slice[-self.max_frames:, ...]
-                        else:
-                            sample_indx = np.linspace(0, raw_video_slice.shape[0] - 1, num=self.max_frames, dtype=int)
-                            video_slice = raw_video_slice[sample_indx, ...]
-                    else:
-                        video_slice = raw_video_slice
-
+                    video_slice = self.rawVideoExtractor.process_raw_data(raw_video_data_clip)
                     video_slice = self.rawVideoExtractor.process_frame_order(video_slice, frame_order=self.frame_order)
 
                     slice_len = video_slice.shape[0]
@@ -211,7 +200,8 @@ class ActivityNet_DataLoader(Dataset):
                     print("video path: {} error. video id: {}, start: {}, end: {}".format(video_path, idx, start_time, end_time))
         except Exception as excep:
             print("video path: {} error. video id: {}, start: {}, end: {}, Error: {}".format(video_path, idx, s, e, excep))
-            raise excep
+            pass
+            # raise e
 
         for i, v_length in enumerate(max_video_length):
             video_mask[i][:v_length] = [1] * v_length

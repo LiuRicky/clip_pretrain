@@ -299,12 +299,19 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                 p1, p2, z1, z2 = self.get_temporal_simsiam(visual_output_temporal1, visual_output_temporal2, video_mask)
                 # simsiam_loss = (torch.sigmoid(-F.cosine_similarity(p1, z2).mean()) + torch.sigmoid(-F.cosine_similarity(p2, z1).mean())) / 2
                 # loss += simsiam_loss
-                temp_simsiam_loss1 = -torch.diag(F.log_softmax(p1 @ z2.T, dim=-1)).mean()
-                temp_simsiam_loss2 = -torch.diag(F.log_softmax(p2 @ z1.T, dim=-1)).mean()
-                loss += (temp_simsiam_loss1 + temp_simsiam_loss2) / 2
                 # simsiam_loss = - (torch.log(F.cosine_similarity(p1, z2).mean()) + torch.log(F.cosine_similarity(p2, z1).mean())) / 2
                 # simsiam_loss = - (F.cosine_similarity(p1, z2).mean() + F.cosine_similarity(p2, z1).mean()) / 2
                 # loss += simsiam_loss
+
+                # gather all nodes
+                p1 = allgather(p1, self.task_config)
+                p2 = allgather(p2, self.task_config)
+                z1 = allgather(z1, self.task_config)
+                z2 = allgather(z2, self.task_config)
+                torch.distributed.barrier()
+                temp_simsiam_loss1 = -torch.diag(F.log_softmax(p1 @ z2.T, dim=-1)).mean()
+                temp_simsiam_loss2 = -torch.diag(F.log_softmax(p2 @ z1.T, dim=-1)).mean()
+                loss += (temp_simsiam_loss1 + temp_simsiam_loss2) / 2
 
             if self.mmsimsiam:
                 # multimodal simsiam loss
@@ -366,7 +373,7 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                            visual_hidden.size(-1))  # shape=(B,T,L,D)
 
         # select some spatial tokens
-        select_num = visual_hidden.shape[2] // 10
+        select_num = 1 # visual_hidden.shape[2] // 10
         if self.tempsimsiam:
             select_num = visual_hidden.shape[2] // 10
         if test_flag and self.tempsimsiam:

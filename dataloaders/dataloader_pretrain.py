@@ -49,8 +49,8 @@ class Pretrain_TrainDataLoader(Dataset):
             with open(jsonl_file_path, 'r') as jl_f:
                 for itm in jsonlines.Reader(jl_f):
                     # origin clip_id is "vid_part1/QBTwzYKx-kE.37.mp4"
-                    video_id = itm['clip_id'] # .replace("/", "/{}/".format(itm['clip_id'].split('/')[1].split('.')[0]))
-                    text = itm['text'].split(',')[0] #replace(",", " then ")
+                    video_id = itm['clip_id'].replace("/", "/{}/".format(itm['clip_id'].split('/')[1].split('.')[0]))
+                    text = itm['text'].replace(",", " then ")
                     self.sentences_dict[len(self.sentences_dict)] = (video_id, text)
         self.sample_len = len(self.sentences_dict)
 

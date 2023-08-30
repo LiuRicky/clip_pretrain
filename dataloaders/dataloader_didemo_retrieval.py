@@ -51,6 +51,7 @@ class DiDeMo_DataLoader(Dataset):
 
         with open(video_id_path_dict[self.subset], 'r') as fp:
             video_ids = [itm.strip() for itm in fp.readlines()]
+        video_ids = [video.split('.')[0]+'.mp4' for video in video_ids]
 
         caption_dict = {}
         with open(video_json_path_dict[self.subset], 'r') as f:
@@ -58,7 +59,7 @@ class DiDeMo_DataLoader(Dataset):
         for itm in json_data:
             description = itm["description"]
             times = itm["times"]
-            video = itm["video"]
+            video = itm["video"].split('.')[0]+'.mp4'
             if video not in video_ids:
                 continue
 
@@ -174,26 +175,14 @@ class DiDeMo_DataLoader(Dataset):
                 elif start_time == end_time:
                     end_time = end_time + 1
 
-                cache_id = "{}_{}_{}".format(video_path, start_time, end_time)
                 # Should be optimized by gathering all asking of this video
-                raw_video_data = self.rawVideoExtractor.get_video_data(video_path, start_time, end_time)
+                raw_video_data = self.rawVideoExtractor.get_video_data(video_path, self.max_frames, start_time, end_time)
                 raw_video_data = raw_video_data['video']
 
                 if len(raw_video_data.shape) > 3:
                     raw_video_data_clip = raw_video_data
                     # L x T x 3 x H x W
-                    raw_video_slice = self.rawVideoExtractor.process_raw_data(raw_video_data_clip)
-                    if self.max_frames < raw_video_slice.shape[0]:
-                        if self.slice_framepos == 0:
-                            video_slice = raw_video_slice[:self.max_frames, ...]
-                        elif self.slice_framepos == 1:
-                            video_slice = raw_video_slice[-self.max_frames:, ...]
-                        else:
-                            sample_indx = np.linspace(0, raw_video_slice.shape[0] - 1, num=self.max_frames, dtype=int)
-                            video_slice = raw_video_slice[sample_indx, ...]
-                    else:
-                        video_slice = raw_video_slice
-
+                    video_slice = self.rawVideoExtractor.process_raw_data(raw_video_data_clip)
                     video_slice = self.rawVideoExtractor.process_frame_order(video_slice, frame_order=self.frame_order)
 
                     slice_len = video_slice.shape[0]

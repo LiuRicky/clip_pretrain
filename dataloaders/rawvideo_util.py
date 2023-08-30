@@ -23,13 +23,20 @@ class RawVideoExtractorDecord():
             Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
         ])
 
-    def video_to_tensor(self, video_file, preprocess, max_frames):
+    def video_to_tensor(self, video_file, preprocess, max_frames, st_time=None, ed_time=None):
         try:
             vr = VideoReader(video_file, ctx=cpu(0))
             total_frame_num = len(vr)
 
             if max_frames < total_frame_num:
-                sample_idx = np.linspace(0, total_frame_num-1, num=max_frames, dtype=int)
+                if st_time != None and ed_time != None:
+                    cap = cv2.VideoCapture(video_file)
+                    fps = int(cap.get(cv2.CAP_PROP_FPS))
+                    st_frame = min(st_time*fps, 0)
+                    ed_frame = min(ed_time*fps-1, total_frame_num-1)
+                    sample_idx = np.linspace(st_frame, ed_frame, num=max_frames, dtype=int) 
+                else:
+                    sample_idx = np.linspace(0, total_frame_num-1, num=max_frames, dtype=int) 
             else:
                 sample_idx = np.arange(total_frame_num)
 
@@ -46,8 +53,8 @@ class RawVideoExtractorDecord():
             video_data = th.zeros(1)
         return {'video': video_data}  # video_data shape here is (T,C,H,W)
 
-    def get_video_data(self, video_path, max_frames):
-        image_input = self.video_to_tensor(video_path, self.transform, max_frames)
+    def get_video_data(self, video_path, max_frames, st_time=None, ed_time=None):
+        image_input = self.video_to_tensor(video_path, self.transform, max_frames, st_time, ed_time)
         return image_input
 
     def process_raw_data(self, raw_video_data):

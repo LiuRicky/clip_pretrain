@@ -13,7 +13,7 @@ main_task_retrieval.py --do_eval --num_thread_reader=8 \
 --feature_framerate 1 --coef_lr 1e-3 \
 --freeze_layer_num 0  --slice_framepos 2 \
 --loose_type --linear_patch 2d --sim_header seqTransf \
---init_model ckpts/ckpt_pretrain_logsoftmax_tempsimsiam_0.1_AVS_1e-4/pytorch_model.bin.1 \
+--init_model ckpts/ckpt_pretrain_logsoftmax_tempsimsiam_0.1/pytorch_model.bin.2 \
 --pretrained_clip_name ViT-B/16
 
 # --init_model ckpts/ckpt_pretrain_tempsimsiam/pytorch_model.bin.2 \
