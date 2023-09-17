@@ -6,7 +6,7 @@ main_task_retrieval.py --do_eval --num_thread_reader=12 \
 --data_path ${DATA_PATH}/LocalizingMoments/data \
 --features_path ${DATA_PATH}/videos \
 --output_dir ckpts/ckpt_pretrain_didemo_test \
---lr 1e-4 --max_words 64 --max_frames 16 --batch_size_val 64 \
+--lr 1e-4 --max_words 64 --max_frames 16 --batch_size_val 128 \
 --datatype didemo \
 --feature_framerate 3 --coef_lr 1e-3 \
 --freeze_layer_num 0 --slice_framepos 2 \

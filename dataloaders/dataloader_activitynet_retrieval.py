@@ -57,7 +57,7 @@ class ActivityNet_DataLoader(Dataset):
         video_dict = {}
         for root, dub_dir, video_files in os.walk(self.features_path):
             for video_file in video_files:
-                video_id_ = ".".join(video_file.split(".")[:-1])
+                video_id_ = ".".join(video_file.split(".")[:-1])[2:]
                 if video_id_ not in video_id_list:
                     continue
                 file_path_ = os.path.join(root, video_file)

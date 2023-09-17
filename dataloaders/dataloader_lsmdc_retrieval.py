@@ -12,6 +12,7 @@ import math
 import random
 from PIL import Image
 from torchvision.transforms import Compose, Resize, CenterCrop, Normalize, InterpolationMode, ToTensor
+from dataloaders.rawvideo_util import RawVideoExtractor
 
 class LSMDC_DataLoader(Dataset):
     """LSMDC dataset loader."""
@@ -89,6 +90,7 @@ class LSMDC_DataLoader(Dataset):
         ])
 
         self.image_size = image_resolution
+        self.rawVideoExtractor = RawVideoExtractor(framerate=feature_framerate, size=image_resolution)
         self.SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
                               "MASK_TOKEN": "[MASK]", "UNK_TOKEN": "[UNK]", "PAD_TOKEN": "[PAD]"}
 
@@ -169,16 +171,23 @@ class LSMDC_DataLoader(Dataset):
 
         # Pair x L x T x 3 x H x W
         video = np.zeros((len(choice_video_ids), self.max_frames, 1, 3,
-                          self.image_size, self.image_size), dtype=np.float)
+                          self.rawVideoExtractor.size, self.rawVideoExtractor.size), dtype=np.float)
 
         for i, video_id in enumerate(choice_video_ids):
-            video_path = os.path.join(self.features_path, video_id)
+            # Individual for YoucokII dataset, due to it video format
+            video_path = os.path.join(self.features_path, "{}.mp4".format(video_id))
+            if os.path.exists(video_path) is False:
+                video_path = video_path.replace(".mp4", ".avi")
 
-            raw_video_data = self._get_video_from_frame(video_path) # T, C, H, W
+            raw_video_data = self.rawVideoExtractor.get_video_data(video_path, self.max_frames)
+            raw_video_data = raw_video_data['video']
             if len(raw_video_data.shape) > 3:
                 raw_video_data_clip = raw_video_data
                 # L x T x 3 x H x W
-                video_slice = raw_video_data_clip.view((-1, 1) + raw_video_data_clip.shape[-3:]) # T, 1, C, H, W
+                video_slice = self.rawVideoExtractor.process_raw_data(raw_video_data_clip)
+
+                video_slice = self.rawVideoExtractor.process_frame_order(video_slice, frame_order=self.frame_order)
+
                 slice_len = video_slice.shape[0]
                 max_video_length[i] = max_video_length[i] if max_video_length[i] > slice_len else slice_len
                 if slice_len < 1:
