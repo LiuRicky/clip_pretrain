@@ -276,13 +276,16 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
             batch = tuple(t.to(device=device, non_blocking=True) for t in batch)
 
         input_ids, input_mask, segment_ids, video, video_mask = batch
-        loss = model(input_ids, segment_ids, input_mask, video, video_mask)
+        loss_itc, loss_temp = model(input_ids, segment_ids, input_mask, video, video_mask)
 
         if n_gpu > 1:
-            loss = loss.mean()  # mean() to average on multi-gpu.
+            loss_itc = loss_itc.mean()  # mean() to average on multi-gpu.
+            loss_temp = loss_temp.mean()
         if args.gradient_accumulation_steps > 1:
-            loss = loss / args.gradient_accumulation_steps
+            loss_itc = loss_itc / args.gradient_accumulation_steps
+            loss_temp = loss_temp / args.gradient_accumulation_steps
 
+        loss = loss_itc + loss_temp
         loss.backward()
 
         total_loss += float(loss)
@@ -304,10 +307,10 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
 
             global_step += 1
             if global_step % log_step == 0 and local_rank == 0:
-                logger.info("Epoch: %d/%s, Step: %d/%d, Lr: %s, Loss: %f, Time/step: %f", epoch + 1,
+                logger.info("Epoch: %d/%s, Step: %d/%d, Lr: %s, Loss_itc: %f, Loss_temp: %f, Time/step: %f", epoch + 1,
                             args.epochs, step + 1,
                             len(train_dataloader), "-".join([str('%.9f'%itm) for itm in sorted(list(set(optimizer.get_lr())))]),
-                            float(loss),
+                            float(loss_itc), float(loss_temp),
                             (time.time() - start_time) / (log_step * args.gradient_accumulation_steps))
                 start_time = time.time()
 

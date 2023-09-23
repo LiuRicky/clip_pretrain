@@ -49,7 +49,7 @@ class RawVideoExtractorDecord():
             else:
                 video_data = th.zeros(1)
         except Exception as e:
-            print("Error: ", e)
+            # print("Error: ", e)
             video_data = th.zeros(1)
         return {'video': video_data}  # video_data shape here is (T,C,H,W)
 

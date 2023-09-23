@@ -63,7 +63,6 @@ class CLIP4ClipPreTrainedModel(PreTrainedModel, nn.Module):
                     contain_frame_position = True
                     break
             if contain_frame_position is False:
-                print('Load temporal transformer weights with text encoder..')
                 for key, val in clip_state_dict.items():
                     if key == "positional_embedding":
                         state_dict["temporal_transformer.frame_position_embeddings.weight"] = val.clone()
@@ -85,6 +84,8 @@ class CLIP4ClipPreTrainedModel(PreTrainedModel, nn.Module):
         if state_dict is not None:
             model = cls.init_preweight(model, state_dict, task_config=task_config)
 
+        if task_config.loss_type == 'mom':
+            model.copy_params()
         return model
 
 
@@ -176,23 +177,79 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         cross_config.max_position_embeddings = context_length
 
         self.loss_type = task_config.loss_type
-        self.tempsimsiam = False
+        self.tempsimsiam = True
         self.random_select_per_frame = False
+        # self.mmsimsiam = False
+        # self.mom = False
         if self.sim_header == "seqTransf":
             self.temporal_transformer = TemporalTransformer(width=transformer_width,
                                                             layers=self.task_config.cross_num_hidden_layers,
                                                             heads=transformer_heads,
                                                             max_frames=context_length)
             self.temporal_scale = nn.Parameter(torch.ones([]))
-            self.temporal_ln_pre = nn.LayerNorm(transformer_width)
-            self.temporal_ln_post = nn.LayerNorm(transformer_width)
             if self.tempsimsiam:
                 self.temporal_predictor = Predictor(width=transformer_width)
             # self.spatial_aggregator = SpatialAggregationTransformer(width=transformer_width,
             #                                                         layers=2,
             #                                                         heads=transformer_heads)
 
+        # if self.mmsimsiam:
+        #     self.video_predictor = Predictor(width=transformer_width)
+        #     self.text_predictor = Predictor(width=transformer_width)
+
+        # if self.mom:
+        #     # momentum encoder
+        #     self.clip_m = copy.deepcopy(self.clip)
+        #     self.temporal_transformer_m = copy.deepcopy(self.temporal_transformer)
+        #     self.model_pairs = [[self.clip, self.clip_m],
+        #                         [self.temporal_transformer, self.temporal_transformer_m],
+        #                         ]
+        #     # create the queue
+        #     self.queue_size = task_config.queue_size
+        #     self.momentum = task_config.momentum
+        #     self.alpha = task_config.alpha
+        #     self.register_buffer("text_queue", torch.randn((self.queue_size, 1, embed_dim)))
+        #     self.register_buffer("video_mask_queue",
+        #                          torch.ones((self.queue_size, task_config.max_frames), dtype=torch.long))
+        #     self.register_buffer("video_queue", torch.randn((self.queue_size, task_config.max_frames, embed_dim)))
+        #     self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+
         self.apply(self.init_weights)
+
+    # @torch.no_grad()
+    # def copy_params(self):
+    #     for model_pair in self.model_pairs:
+    #         for param, param_m in zip(model_pair[0].parameters(), model_pair[1].parameters()):
+    #             param_m.data.copy_(param.data)  # initialize
+    #             param_m.requires_grad = False  # not update by gradient
+    #     logger.info("Copy params from module to momentum modules done")
+
+    # @torch.no_grad()
+    # def _momentum_update(self):
+    #     for model_pair in self.model_pairs:
+    #         for param, param_m in zip(model_pair[0].parameters(), model_pair[1].parameters()):
+    #             param_m.data = param_m.data * self.momentum + param.data * (1. - self.momentum)
+
+    # @torch.no_grad()
+    # def _dequeue_and_enqueue(self, video_feat, video_mask, text_feat):
+    #     # gather keys before updating queue
+    #     video_feat, video_mask, text_feat = video_feat.contiguous(), video_mask.contiguous(), text_feat.contiguous()
+    #     video_feats = concat_all_gather(video_feat)
+    #     video_masks = concat_all_gather(video_mask)
+    #     text_feats = concat_all_gather(text_feat)
+
+    #     batch_size = video_feats.shape[0]
+
+    #     ptr = int(self.queue_ptr)
+    #     assert self.queue_size % batch_size == 0  # for simplicity
+
+    #     # replace the keys at ptr (dequeue and enqueue)
+    #     self.video_queue[ptr:ptr + batch_size, :, :] = video_feats
+    #     self.video_mask_queue[ptr:ptr + batch_size, :] = video_masks
+    #     self.text_queue[ptr:ptr + batch_size, :, :] = text_feats
+    #     ptr = (ptr + batch_size) % self.queue_size  # move pointer
+
+    #     self.queue_ptr[0] = ptr
 
     def forward(self, input_ids, token_type_ids, attention_mask, video, video_mask=None):
         input_ids = input_ids.view(-1, input_ids.shape[-1])
@@ -210,15 +267,26 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                                                                          video, video_mask, shaped=True,
                                                                          video_frame=video_frame)
 
+        # if self.mom:
+        #     # get momentum features
+        #     with torch.no_grad():
+        #         self._momentum_update()
+        #         sequence_output_m, visual_output_m = self.get_sequence_visual_output_m(input_ids, token_type_ids,
+        #                                                                                attention_mask,
+        #                                                                                video, video_mask, shaped=True,
+        #                                                                                video_frame=video_frame)
+
         if self.training:
             # There is simsiam in training
             visual_output1, visual_output2, visual_output_temporal1, visual_output_temporal2  = visual_output
+            loss = 0.
             if self.loss_type == 'itc':
                 sim_matrix = self.get_similarity_logits(sequence_output, visual_output1, attention_mask, video_mask,
                                                         shaped=True, loose_type=self.loose_type)
                 sim_loss1 = -torch.diag(F.log_softmax(sim_matrix, dim=-1)).mean()
                 sim_loss2 = -torch.diag(F.log_softmax(sim_matrix.T, dim=-1)).mean()
-                loss_itc = (sim_loss1 + sim_loss2) / 2
+                sim_loss = (sim_loss1 + sim_loss2) / 2
+                loss += sim_loss
 
                 # sim_matrix = self.get_similarity_logits(sequence_output, visual_output2, attention_mask, video_mask,
                 #                                         shaped=True, loose_type=self.loose_type)
@@ -244,10 +312,23 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
                 # torch.distributed.barrier()
                 temp_simsiam_loss1 = -torch.diag(F.log_softmax(p1 @ z2.T, dim=-1)).mean()
                 temp_simsiam_loss2 = -torch.diag(F.log_softmax(p2 @ z1.T, dim=-1)).mean()
-                loss_temp = (temp_simsiam_loss1 + temp_simsiam_loss2) / 2
-                return loss_itc, loss_temp
+                loss += (temp_simsiam_loss1 + temp_simsiam_loss2) / 2
 
-            return loss_itc
+            # if self.mmsimsiam:
+            #     # multimodal simsiam loss
+            #     sim_t2v_simsiam, sim_v2t_simsiam = self.get_mm_simsiam(sequence_output, visual_output1, video_mask)
+            #     # mm_simsiam_loss = (torch.sigmoid(-torch.diag(sim_t2v_simsiam).mean()) + torch.sigmoid(-torch.diag(sim_v2t_simsiam).mean())) / 2
+            #     # loss += mm_simsiam_loss
+            #     simsiam_loss1 = -torch.diag(F.log_softmax(sim_t2v_simsiam, dim=-1)).mean()
+            #     simsiam_loss2 = -torch.diag(F.log_softmax(sim_v2t_simsiam, dim=-1)).mean()
+            #     loss += (simsiam_loss1 + simsiam_loss2) / 2
+
+            # if self.mom:
+            #     loss += self.get_momentum_loss(sequence_output, visual_output, video_mask,
+            #                                    sequence_output_m, visual_output_m)
+            #     self._dequeue_and_enqueue(visual_output_m, video_mask, sequence_output_m)
+
+            return loss
         else:
             return None
 
@@ -272,9 +353,9 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
             # visual_output shape is (B, T, L, D)
             # visual_mask shape is (B, T)
             # Sequential type: Transformer Encoder
-            visual_output_temporal = self.temporal_transformer(self.temporal_ln_pre(visual_output), video_mask)
+            visual_output_temporal = self.temporal_transformer(visual_output, video_mask)
             visual_output = self.temporal_scale * visual_output_temporal + visual_output
-            visual_output = self.temporal_ln_post(visual_output[:, :, 0, :])
+            visual_output = visual_output[:, :, 0, :]
             visual_output_temporal = visual_output_temporal[:, :, 0, :]
 
         return visual_output, visual_output_temporal
@@ -350,6 +431,78 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
         visual_output = self.get_visual_output(video, video_mask, shaped=True, video_frame=video_frame, test_flag=test_flag)
 
         return sequence_output, visual_output
+
+    # def get_sequence_visual_output_m(self, input_ids, token_type_ids, attention_mask, video, video_mask, shaped=False,
+    #                                  video_frame=-1):
+    #     if shaped is False:
+    #         input_ids = input_ids.view(-1, input_ids.shape[-1])
+    #         token_type_ids = token_type_ids.view(-1, token_type_ids.shape[-1])
+    #         attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
+    #         video_mask = video_mask.view(-1, video_mask.shape[-1])
+
+    #         video = torch.as_tensor(video).float()
+    #         b, pair, bs, ts, channel, h, w = video.shape
+    #         video = video.view(b * pair * bs * ts, channel, h, w)
+    #         video_frame = bs * ts
+
+    #     # encode text momentum begin ######################
+    #     bs_pair = input_ids.size(0)
+    #     sequence_output_m = self.clip_m.encode_text(input_ids).float()
+    #     sequence_output_m = sequence_output_m.view(bs_pair, -1, sequence_output_m.size(-1))
+    #     # encode text momentum end ######################
+
+    #     # encode video momentum begin #####################
+    #     visual_output_m = self.clip_m.encode_image(video, video_frame=video_frame).float()  # shape=(B*T,L,D)
+    #     visual_output_m = visual_output_m.view(bs_pair, -1, visual_output_m.size(-2),
+    #                                            visual_output_m.size(-1))  # shape=(B,T,L,D)
+
+    #     # select some spatial tokens
+    #     select_num = 5
+    #     if hasattr(self, 'spatial_aggregator'):
+    #         B, T, L, D = visual_output_m.shape
+    #         x_cls = visual_output_m[:, :, :1, :]
+    #         x_s = self.spatial_aggregator(visual_output_m[:, :, 1:, :].view(B * T, L - 1, D))
+    #         x_s = x_s.view(B, T, -1, D)
+    #         visual_output_m = torch.cat([x_cls, x_s], dim=2)
+    #     else:
+    #         if self.training:
+    #             # random select
+    #             select_idx = torch.randperm(visual_output_m.size(2) - 1)[:select_num - 1] + 1
+    #             select_idx = torch.cat([torch.zeros([1], dtype=torch.long), select_idx], dim=0)
+    #             visual_output_m = visual_output_m[:, :, select_idx, :]
+    #         else:
+    #             fold = visual_output_m.size(2) // select_num
+    #             select_idx = torch.arange(start=0, end=visual_output_m.size(2), step=fold)
+    #             visual_output_m = visual_output_m[:, :, select_idx, :]
+
+    #     # encode temporal
+    #     visual_output_m_temporal = self.temporal_transformer_m(visual_output_m, video_mask)
+    #     visual_output_m = visual_output_m_temporal + visual_output_m
+    #     visual_output_m = visual_output_m[:, :, 0, :]
+    #     # encode video momentum end #####################
+    #     return sequence_output_m, visual_output_m
+
+    # def get_momentum_loss(self, sequence_output, visual_output, video_mask, sequence_output_m, visual_output_m):
+    #     with torch.no_grad():
+    #         sequence_output_all = torch.cat([sequence_output_m, self.text_queue.clone().detach()], dim=0)
+    #         video_mask_all = torch.cat([video_mask, self.video_mask_queue.clone().detach()], dim=0)
+    #         visual_output_all = torch.cat([visual_output_m, self.video_queue.clone().detach()], dim=0)
+    #         sim_t2v_m = self._get_frame_text_similarity_logits(sequence_output_m, visual_output_all, video_mask_all)
+    #         sim_v2t_m = self._get_frame_text_similarity_logits(sequence_output_all, visual_output_m, video_mask).T
+
+    #         sim_targets = torch.zeros(sim_t2v_m.size()).to(sim_t2v_m.device)
+    #         sim_targets.fill_diagonal_(1)
+    #         sim_targets_t2v = self.alpha * F.softmax(sim_t2v_m, dim=1) + (1 - self.alpha) * sim_targets
+    #         sim_targets_v2t = self.alpha * F.softmax(sim_v2t_m, dim=1) + (1 - self.alpha) * sim_targets
+
+    #     sim_t2v = self._get_frame_text_similarity_logits(sequence_output, visual_output_all, video_mask_all)
+    #     sim_v2t = self._get_frame_text_similarity_logits(sequence_output_all, visual_output, video_mask).T
+
+    #     loss_t2v = -torch.sum(F.log_softmax(sim_t2v, dim=1) * sim_targets_t2v, dim=1).mean()
+    #     loss_v2t = -torch.sum(F.log_softmax(sim_v2t, dim=1) * sim_targets_v2t, dim=1).mean()
+
+    #     loss_mom = (loss_v2t + loss_t2v) / 2
+    #     return loss_mom
 
     def _mean_pooling_for_similarity_visual(self, visual_output, video_mask, ):
         video_mask_un = video_mask.to(dtype=torch.float).unsqueeze(-1)
@@ -438,3 +591,16 @@ class CLIP4Clip(CLIP4ClipPreTrainedModel):
 
         return p1, p2, z1.detach(), z2.detach()
     
+    # def get_mm_simsiam(self, sequence_output, visual_output, video_mask):
+    #     p1 = self.text_predictor(sequence_output) # (B, 1, D)
+    #     p2 = self.video_predictor(visual_output) # (B, T, D)
+
+    #     z1 = sequence_output.detach()
+    #     z2 = visual_output.detach()
+
+    #     sim_t2v_simsiam = self._get_frame_text_similarity_logits(p1, z2, video_mask, True)
+    #     sim_v2t_simsiam = self._get_frame_text_similarity_logits(z1, p2, video_mask, True).T
+
+    #     return sim_t2v_simsiam, sim_v2t_simsiam
+
+        

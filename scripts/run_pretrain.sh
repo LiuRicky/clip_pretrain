@@ -1,13 +1,13 @@
-export CUDA_VISIBLE_DEVICES=4,5,6,7
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 DATA_PATH=/root
 python -m torch.distributed.launch --nproc_per_node=4 --master_port 23904 \
 main_pretrain.py --do_train --num_thread_reader=8 \
---epochs=3 --batch_size=1024 --n_display=50 \
+--epochs=3 --batch_size=768 --n_display=50 \
 --val_csv /data1/DATASET/MSRVTT/msrvtt_data/MSRVTT_JSFUSION_test.csv \
 --data_path ${DATA_PATH}/HD_VILA_BLIP2 \
 --pretrain_features_path ${DATA_PATH}/HD_VILA \
 --features_path /data1/DATASET/MSRVTT/compress_videos \
---output_dir ckpts/ckpt_pretrain_logsoftmax_tempsimsiam_0.1_2M_1e-4_b16_1024_tempgather \
+--output_dir ckpts/ckpt_pretrain_logsoftmax_tempsimsiam_0.1_2M_1e-4_b16_768_tempratiolnpost \
 --lr 1e-4 --max_words 32 --max_frames 12 --batch_size_val 64 \
 --datatype pretrain --expand_msrvtt_sentences  \
 --feature_framerate 1 --coef_lr 1e-4 \
